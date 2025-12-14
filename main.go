@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strconv"
 	"strings"
@@ -25,6 +26,8 @@ func main() {
 	heightFlag := flag.String("height", "", "Height of the TUI (e.g., '40%' or '20')")
 	initFlag := flag.String("init", "", "Output shell integration script (zsh, bash, or fish)")
 	versionFlag := flag.Bool("version", false, "Print version and exit")
+	tmuxFlag := flag.Bool("tmux", false, "Run in tmux popup (auto-detected if in tmux)")
+	noTmuxFlag := flag.Bool("no-tmux", false, "Disable tmux popup even when in tmux")
 	flag.Parse()
 
 	// Handle version flag
@@ -66,11 +69,23 @@ func main() {
 
 	// Determine mode based on flags
 	if *heightFlag != "" {
-		// TUI mode
 		height := parseHeight(*heightFlag)
-		if err := runTUI(ctx, height, bashMCPServerClient); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+
+		// Check if we should use tmux popup
+		useTmux := *tmuxFlag || (inTmux() && !*noTmuxFlag)
+
+		if useTmux && inTmux() {
+			// Run in tmux popup
+			if err := runTmuxPopup(*heightFlag); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+		} else {
+			// TUI mode
+			if err := runTUI(ctx, height, bashMCPServerClient); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
 		}
 	} else {
 		// CLI mode (original behavior)
@@ -79,6 +94,54 @@ func main() {
 			os.Exit(1)
 		}
 	}
+}
+
+// inTmux returns true if running inside tmux
+func inTmux() bool {
+	return os.Getenv("TMUX") != "" && os.Getenv("TMUX_PANE") != ""
+}
+
+// runTmuxPopup runs aish in a tmux popup window
+func runTmuxPopup(height string) error {
+	// Get current working directory
+	dir, err := os.Getwd()
+	if err != nil {
+		dir = "."
+	}
+
+	// Get the aish executable path
+	executable, err := os.Executable()
+	if err != nil {
+		executable = "aish"
+	}
+
+	// Build the command to run inside the popup
+	// Use --no-tmux to prevent infinite recursion
+	aishCmd := fmt.Sprintf("%s --height %s --no-tmux", executable, height)
+
+	// tmux display-popup arguments
+	// -E: close popup when command exits
+	// -d: working directory
+	// -w: width (80% of pane)
+	// -h: height
+	// -xC -yS: center horizontally, attach to bottom
+	tmuxArgs := []string{
+		"display-popup",
+		"-E",
+		"-d", dir,
+		"-w", "80%",
+		"-h", height,
+		"-xC",
+		"-yS",
+		"sh", "-c", aishCmd,
+	}
+
+	cmd := exec.Command("tmux", tmuxArgs...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	return cmd.Run()
 }
 
 // parseHeight parses a height string like "40%" or "20"
@@ -174,8 +237,9 @@ __aish_widget() {
   local saved_cursor="$CURSOR"
   
   # Run aish in TUI mode
+  # Uses tmux popup when in tmux, otherwise uses alt screen
   # The TUI writes to /dev/tty directly, stdout captures only the final output
-  output=$(aish --height 40%)
+  output=$(aish --height 50%)
   local ret=$?
   
   # If aish output a command, insert it
@@ -202,8 +266,9 @@ __aish_widget() {
   local saved_point="$READLINE_POINT"
   
   # Run aish in TUI mode
+  # Uses tmux popup when in tmux, otherwise uses alt screen
   # The TUI writes to /dev/tty directly, stdout captures only the final output
-  output=$(aish --height 40%)
+  output=$(aish --height 50%)
   
   # If aish output a command, insert it
   if [[ -n "$output" ]]; then
@@ -221,8 +286,9 @@ const fishInitScript = `# aish shell integration for fish
 #   aish --init fish | source
 
 function __aish_widget
+  # Uses tmux popup when in tmux, otherwise uses alt screen
   # The TUI writes to /dev/tty directly, stdout captures only the final output
-  set -l output (aish --height 40%)
+  set -l output (aish --height 50%)
   
   if test -n "$output"
     commandline -i "$output"

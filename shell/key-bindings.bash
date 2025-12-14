@@ -26,7 +26,7 @@ __aishcmd() {
 
 # Default options for aish
 __aish_defaults() {
-  echo "--height ${AISH_HEIGHT:-40%}"
+  echo "--height ${AISH_HEIGHT:-50%}"
 }
 
 # Ctrl+Space - Open AI chat assistant

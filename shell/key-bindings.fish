@@ -24,7 +24,7 @@ end
 
 # Default height if not set
 if not set -q AISH_HEIGHT
-    set -g AISH_HEIGHT "40%"
+    set -g AISH_HEIGHT "50%"
 end
 
 # Determine the aish command
