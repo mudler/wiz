@@ -10,6 +10,8 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/modelcontextprotocol/go-sdk v1.0.0
 	github.com/mudler/cogito v0.7.0
+	github.com/sashabaranov/go-openai v1.41.2
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -37,7 +39,6 @@ require (
 	github.com/muesli/cancelreader v0.2.2 // indirect
 	github.com/muesli/termenv v0.16.0 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
-	github.com/sashabaranov/go-openai v1.41.2 // indirect
 	github.com/shopspring/decimal v1.4.0 // indirect
 	github.com/spf13/cast v1.7.0 // indirect
 	github.com/tmc/langchaingo v0.1.13 // indirect

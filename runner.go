@@ -9,6 +9,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/mudler/aish/chat"
+	"github.com/mudler/aish/config"
 )
 
 func runner(ctx context.Context, transports ...mcp.Transport) error {
@@ -49,11 +50,7 @@ func runner(ctx context.Context, transports ...mcp.Transport) error {
 		},
 	}
 
-	cfg := chat.Config{
-		Model:   os.Getenv("MODEL"),
-		APIKey:  os.Getenv("API_KEY"),
-		BaseURL: os.Getenv("BASE_URL"),
-	}
+	cfg := config.Load()
 
 	session, err := chat.NewSession(ctx, cfg, callbacks, transports...)
 	if err != nil {

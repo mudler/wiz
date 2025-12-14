@@ -1,0 +1,80 @@
+package config
+
+import (
+	"os"
+	"path/filepath"
+
+	"github.com/mudler/aish/chat"
+	"gopkg.in/yaml.v3"
+)
+
+// Config represents the application configuration
+type Config struct {
+	Model   string `yaml:"model"`
+	APIKey  string `yaml:"api_key"`
+	BaseURL string `yaml:"base_url"`
+}
+
+// configPaths returns the list of config file paths to try, in order of priority
+func configPaths() []string {
+	var paths []string
+
+	// First priority: XDG config directory
+	if xdgConfig := os.Getenv("XDG_CONFIG_HOME"); xdgConfig != "" {
+		paths = append(paths, filepath.Join(xdgConfig, "aish", "config.yaml"))
+	}
+
+	// Second priority: ~/.config/aish/config.yaml
+	if home, err := os.UserHomeDir(); err == nil {
+		paths = append(paths, filepath.Join(home, ".config", "aish", "config.yaml"))
+		// Third priority: ~/.aish.yaml
+		paths = append(paths, filepath.Join(home, ".aish.yaml"))
+	}
+
+	return paths
+}
+
+// loadFromFile attempts to load config from the first existing config file
+func loadFromFile() Config {
+	var cfg Config
+
+	for _, path := range configPaths() {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+
+		if err := yaml.Unmarshal(data, &cfg); err != nil {
+			continue
+		}
+
+		// Found and parsed a config file
+		break
+	}
+
+	return cfg
+}
+
+// Load loads the configuration from YAML file and environment variables.
+// Environment variables take precedence over YAML config.
+func Load() chat.Config {
+	// Load from YAML file first
+	cfg := loadFromFile()
+
+	// Override with environment variables if set
+	if model := os.Getenv("MODEL"); model != "" {
+		cfg.Model = model
+	}
+	if apiKey := os.Getenv("API_KEY"); apiKey != "" {
+		cfg.APIKey = apiKey
+	}
+	if baseURL := os.Getenv("BASE_URL"); baseURL != "" {
+		cfg.BaseURL = baseURL
+	}
+
+	return chat.Config{
+		Model:   cfg.Model,
+		APIKey:  cfg.APIKey,
+		BaseURL: cfg.BaseURL,
+	}
+}

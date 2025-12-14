@@ -13,7 +13,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/mudler/aish/chat"
+	"github.com/mudler/aish/config"
 	"github.com/mudler/aish/tui"
 )
 
@@ -164,11 +164,7 @@ func parseHeight(s string) int {
 
 // runTUI runs the Bubble Tea TUI
 func runTUI(ctx context.Context, height int, transports ...mcp.Transport) error {
-	cfg := chat.Config{
-		Model:   os.Getenv("MODEL"),
-		APIKey:  os.Getenv("API_KEY"),
-		BaseURL: os.Getenv("BASE_URL"),
-	}
+	cfg := config.Load()
 
 	model := tui.NewModel(ctx, cfg, height, transports...)
 

@@ -49,6 +49,12 @@ type Model struct {
 	// Tool approval state
 	pendingTool      *chat.ToolCallRequest
 	awaitingApproval bool
+
+	// Channels for async communication with callbacks
+	statusChan       chan string
+	reasoningChan    chan string
+	toolRequestChan  chan chat.ToolCallRequest
+	toolResponseChan chan chat.ToolCallResponse
 }
 
 // responseMsg is sent when the AI responds
@@ -99,16 +105,20 @@ func NewModel(ctx context.Context, cfg chat.Config, height int, transports ...mc
 	}
 
 	return Model{
-		viewport:   vp,
-		textarea:   ta,
-		spinner:    s,
-		messages:   []ChatMessage{},
-		ctx:        ctx,
-		cancel:     cancel,
-		maxHeight:  maxH,
-		transports: transports,
-		cfg:        cfg,
-		height:     height,
+		viewport:         vp,
+		textarea:         ta,
+		spinner:          s,
+		messages:         []ChatMessage{},
+		ctx:              ctx,
+		cancel:           cancel,
+		maxHeight:        maxH,
+		transports:       transports,
+		cfg:              cfg,
+		height:           height,
+		statusChan:       make(chan string, 10),
+		reasoningChan:    make(chan string, 10),
+		toolRequestChan:  make(chan chat.ToolCallRequest),
+		toolResponseChan: make(chan chat.ToolCallResponse),
 	}
 }
 
@@ -126,15 +136,21 @@ func (m Model) initSession() tea.Cmd {
 	return func() tea.Msg {
 		callbacks := chat.Callbacks{
 			OnStatus: func(status string) {
-				// Status updates are handled via program.Send in the async goroutine
+				select {
+				case m.statusChan <- status:
+				default:
+				}
 			},
 			OnReasoning: func(reasoning string) {
-				// Reasoning updates are handled via program.Send in the async goroutine
+				select {
+				case m.reasoningChan <- reasoning:
+				default:
+				}
 			},
 			OnToolCall: func(req chat.ToolCallRequest) chat.ToolCallResponse {
-				// Tool calls will be handled synchronously for now
-				// In a more advanced implementation, this would be async
-				return chat.ToolCallResponse{Approved: true}
+				// Send tool request and wait for user response
+				m.toolRequestChan <- req
+				return <-m.toolResponseChan
 			},
 		}
 
@@ -199,6 +215,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.session = msg.session
 		m.sessionReady = true
+		// Start listening for callbacks
+		cmds = append(cmds, m.listenStatus(), m.listenReasoning(), m.listenToolRequest())
 
 	case responseMsg:
 		m.loading = false
@@ -221,15 +239,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case statusMsg:
 		m.status = string(msg)
 		m.updateViewport()
+		// Continue listening for more status updates
+		cmds = append(cmds, m.listenStatus())
 
 	case reasoningMsg:
 		m.reasoning = string(msg)
 		m.updateViewport()
+		// Continue listening for more reasoning updates
+		cmds = append(cmds, m.listenReasoning())
 
 	case toolCallMsg:
 		m.pendingTool = (*chat.ToolCallRequest)(&msg)
 		m.awaitingApproval = true
+		m.loading = false // Allow user input for approval
 		m.updateViewport()
+		// Continue listening for more tool requests
+		cmds = append(cmds, m.listenToolRequest())
 
 	case spinner.TickMsg:
 		m.spinner, cmd = m.spinner.Update(msg)
@@ -257,13 +282,69 @@ func (m Model) sendMessage(text string) tea.Cmd {
 	}
 }
 
+// listenStatus listens for status updates from the session
+func (m Model) listenStatus() tea.Cmd {
+	return func() tea.Msg {
+		select {
+		case status := <-m.statusChan:
+			return statusMsg(status)
+		case <-m.ctx.Done():
+			return nil
+		}
+	}
+}
+
+// listenReasoning listens for reasoning updates from the session
+func (m Model) listenReasoning() tea.Cmd {
+	return func() tea.Msg {
+		select {
+		case reasoning := <-m.reasoningChan:
+			return reasoningMsg(reasoning)
+		case <-m.ctx.Done():
+			return nil
+		}
+	}
+}
+
+// listenToolRequest listens for tool call requests from the session
+func (m Model) listenToolRequest() tea.Cmd {
+	return func() tea.Msg {
+		select {
+		case req := <-m.toolRequestChan:
+			return toolCallMsg(req)
+		case <-m.ctx.Done():
+			return nil
+		}
+	}
+}
+
 // handleToolApproval handles tool approval input
 func (m Model) handleToolApproval(input string) (tea.Model, tea.Cmd) {
+	input = strings.ToLower(strings.TrimSpace(input))
+
+	var response chat.ToolCallResponse
+	switch input {
+	case "y", "yes":
+		response = chat.ToolCallResponse{Approved: true}
+	case "n", "no":
+		response = chat.ToolCallResponse{Approved: false}
+	default:
+		// Treat as adjustment
+		response = chat.ToolCallResponse{Approved: true, Adjustment: input}
+	}
+
 	m.awaitingApproval = false
 	m.pendingTool = nil
 	m.textarea.Reset()
+	m.loading = true
+	m.status = "Executing tool..."
 	m.updateViewport()
-	return m, nil
+
+	// Send response back to the waiting callback
+	return m, func() tea.Msg {
+		m.toolResponseChan <- response
+		return nil
+	}
 }
 
 // updateDimensions updates component dimensions based on window size
