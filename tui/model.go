@@ -38,6 +38,7 @@ type Model struct {
 	// UI state
 	width     int
 	height    int
+	maxHeight int // Configured max height (0 = no limit)
 	loading   bool
 	status    string
 	reasoning string
@@ -91,6 +92,12 @@ func NewModel(ctx context.Context, cfg chat.Config, height int, transports ...mc
 	s := spinner.New()
 	s.Spinner = spinner.Dot
 
+	// Calculate max height - negative means percentage, positive means lines
+	maxH := height
+	if maxH < 0 {
+		maxH = 0 // Will be calculated on first WindowSizeMsg
+	}
+
 	return Model{
 		viewport:   vp,
 		textarea:   ta,
@@ -98,6 +105,7 @@ func NewModel(ctx context.Context, cfg chat.Config, height int, transports ...mc
 		messages:   []ChatMessage{},
 		ctx:        ctx,
 		cancel:     cancel,
+		maxHeight:  maxH,
 		transports: transports,
 		cfg:        cfg,
 		height:     height,
@@ -260,11 +268,17 @@ func (m Model) handleToolApproval(input string) (tea.Model, tea.Cmd) {
 
 // updateDimensions updates component dimensions based on window size
 func (m *Model) updateDimensions() {
+	// Constrain height to maxHeight if set
+	effectiveHeight := m.height
+	if m.maxHeight > 0 && effectiveHeight > m.maxHeight {
+		effectiveHeight = m.maxHeight
+	}
+
 	headerHeight := 2
 	footerHeight := 5 // textarea + border
 	statusHeight := 1
 
-	vpHeight := m.height - headerHeight - footerHeight - statusHeight
+	vpHeight := effectiveHeight - headerHeight - footerHeight - statusHeight
 	if vpHeight < 5 {
 		vpHeight = 5
 	}

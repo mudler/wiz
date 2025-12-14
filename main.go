@@ -75,8 +75,8 @@ func main() {
 		useTmux := *tmuxFlag || (inTmux() && !*noTmuxFlag)
 
 		if useTmux && inTmux() {
-			// Run in tmux popup
-			if err := runTmuxPopup(*heightFlag); err != nil {
+			// Run in tmux split pane (like fzf-tmux -d)
+			if err := runTmuxSplit(*heightFlag); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
@@ -101,8 +101,8 @@ func inTmux() bool {
 	return os.Getenv("TMUX") != "" && os.Getenv("TMUX_PANE") != ""
 }
 
-// runTmuxPopup runs aish in a tmux popup window
-func runTmuxPopup(height string) error {
+// runTmuxSplit runs aish in a tmux split pane (like fzf-tmux -d)
+func runTmuxSplit(height string) error {
 	// Get current working directory
 	dir, err := os.Getwd()
 	if err != nil {
@@ -115,24 +115,22 @@ func runTmuxPopup(height string) error {
 		executable = "aish"
 	}
 
-	// Build the command to run inside the popup
+	// Build the command to run inside the split pane
 	// Use --no-tmux to prevent infinite recursion
 	aishCmd := fmt.Sprintf("%s --height %s --no-tmux", executable, height)
 
-	// tmux display-popup arguments
-	// -E: close popup when command exits
-	// -d: working directory
-	// -w: width (80% of pane)
-	// -h: height
-	// -xC -yS: center horizontally, attach to bottom
+	// tmux split-window arguments
+	// -d: don't switch focus to new pane initially (we'll switch after)
+	// -v: vertical split (new pane below)
+	// -l: size of the new pane
+	// -c: working directory
+	//
+	// After split, we swap panes so the new pane is below and select it
 	tmuxArgs := []string{
-		"display-popup",
-		"-E",
-		"-d", dir,
-		"-w", "80%",
-		"-h", height,
-		"-xC",
-		"-yS",
+		"split-window",
+		"-v",         // vertical split (creates pane below)
+		"-l", height, // height of the new pane
+		"-c", dir, // working directory
 		"sh", "-c", aishCmd,
 	}
 
@@ -188,9 +186,34 @@ func runTUI(ctx context.Context, height int, transports ...mcp.Transport) error 
 	}
 	defer ttyOut.Close()
 
+	// Calculate actual height for inline mode
+	// Like fzf, we render inline at the bottom of the terminal
+	termHeight := getTerminalHeight()
+	actualHeight := height
+	if height < 0 {
+		// Negative means percentage
+		actualHeight = (termHeight * (-height)) / 100
+	}
+	if actualHeight > termHeight {
+		actualHeight = termHeight
+	}
+	if actualHeight < 5 {
+		actualHeight = 5
+	}
+
+	// Make space for the TUI by printing newlines (like fzf does)
+	// This pushes the existing content up
+	for i := 0; i < actualHeight; i++ {
+		fmt.Fprint(ttyOut, "\n")
+	}
+	// Move cursor up to the start of our space
+	fmt.Fprintf(ttyOut, "\x1b[%dA", actualHeight)
+	// Move to beginning of line
+	fmt.Fprint(ttyOut, "\x1b[G")
+
 	// Configure program options to use /dev/tty directly
+	// Don't use alt screen - render inline like fzf
 	opts := []tea.ProgramOption{
-		tea.WithAltScreen(),
 		tea.WithInput(ttyIn),
 		tea.WithOutput(ttyOut),
 	}
@@ -198,6 +221,11 @@ func runTUI(ctx context.Context, height int, transports ...mcp.Transport) error 
 	p := tea.NewProgram(model, opts...)
 
 	finalModel, err := p.Run()
+
+	// Clear the space we used (move to start and clear to end of screen)
+	fmt.Fprint(ttyOut, "\x1b[G") // Move to beginning of line
+	fmt.Fprint(ttyOut, "\x1b[J") // Clear from cursor to end of screen
+
 	if err != nil {
 		return err
 	}
@@ -210,6 +238,35 @@ func runTUI(ctx context.Context, height int, transports ...mcp.Transport) error 
 	}
 
 	return nil
+}
+
+// getTerminalHeight returns the terminal height
+func getTerminalHeight() int {
+	// Try to get terminal size
+	cmd := exec.Command("tput", "lines")
+	cmd.Stdin = os.Stdin
+	out, err := cmd.Output()
+	if err == nil {
+		if h, err := strconv.Atoi(strings.TrimSpace(string(out))); err == nil && h > 0 {
+			return h
+		}
+	}
+
+	// Fallback: try stty
+	cmd = exec.Command("stty", "size")
+	cmd.Stdin, _ = os.OpenFile("/dev/tty", os.O_RDONLY, 0)
+	out, err = cmd.Output()
+	if err == nil {
+		parts := strings.Fields(string(out))
+		if len(parts) >= 1 {
+			if h, err := strconv.Atoi(parts[0]); err == nil && h > 0 {
+				return h
+			}
+		}
+	}
+
+	// Default
+	return 24
 }
 
 // getInitScript returns the shell integration script for the given shell
