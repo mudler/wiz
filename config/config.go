@@ -4,16 +4,10 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/mudler/aish/chat"
+	"github.com/mudler/aish/types"
+
 	"gopkg.in/yaml.v3"
 )
-
-// Config represents the application configuration
-type Config struct {
-	Model   string `yaml:"model"`
-	APIKey  string `yaml:"api_key"`
-	BaseURL string `yaml:"base_url"`
-}
 
 // configPaths returns the list of config file paths to try, in order of priority
 func configPaths() []string {
@@ -35,8 +29,8 @@ func configPaths() []string {
 }
 
 // loadFromFile attempts to load config from the first existing config file
-func loadFromFile() Config {
-	var cfg Config
+func loadFromFile() types.Config {
+	var cfg types.Config
 
 	for _, path := range configPaths() {
 		data, err := os.ReadFile(path)
@@ -57,7 +51,7 @@ func loadFromFile() Config {
 
 // Load loads the configuration from YAML file and environment variables.
 // Environment variables take precedence over YAML config.
-func Load() chat.Config {
+func Load() types.Config {
 	// Load from YAML file first
 	cfg := loadFromFile()
 
@@ -72,9 +66,5 @@ func Load() chat.Config {
 		cfg.BaseURL = baseURL
 	}
 
-	return chat.Config{
-		Model:   cfg.Model,
-		APIKey:  cfg.APIKey,
-		BaseURL: cfg.BaseURL,
-	}
+	return cfg
 }

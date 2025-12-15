@@ -9,10 +9,10 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/mudler/aish/chat"
-	"github.com/mudler/aish/config"
+	"github.com/mudler/aish/types"
 )
 
-func runner(ctx context.Context, transports ...mcp.Transport) error {
+func runner(ctx context.Context, cfg types.Config, transports ...mcp.Transport) error {
 	reader := bufio.NewReader(os.Stdin)
 
 	callbacks := chat.Callbacks{
@@ -49,8 +49,6 @@ func runner(ctx context.Context, transports ...mcp.Transport) error {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		},
 	}
-
-	cfg := config.Load()
 
 	session, err := chat.NewSession(ctx, cfg, callbacks, transports...)
 	if err != nil {

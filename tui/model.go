@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/mudler/aish/types"
+
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -32,7 +34,7 @@ type Model struct {
 	ctx          context.Context
 	cancel       context.CancelFunc
 	transports   []mcp.Transport
-	cfg          chat.Config
+	cfg          types.Config
 	sessionReady bool
 
 	// UI state
@@ -79,7 +81,7 @@ type sessionReadyMsg struct {
 }
 
 // NewModel creates a new TUI model
-func NewModel(ctx context.Context, cfg chat.Config, height int, transports ...mcp.Transport) Model {
+func NewModel(ctx context.Context, cfg types.Config, height int, transports ...mcp.Transport) Model {
 	ctx, cancel := context.WithCancel(ctx)
 
 	ta := textarea.New()

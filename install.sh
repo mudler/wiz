@@ -11,6 +11,7 @@
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/mudler/aish/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/mudler/aish/main/install.sh | zsh
 #   OR
 #   ./install.sh
 #

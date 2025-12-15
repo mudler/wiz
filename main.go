@@ -15,11 +15,22 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/mudler/aish/config"
 	"github.com/mudler/aish/tui"
+	"github.com/mudler/aish/types"
 )
 
 var (
 	version = "dev"
 )
+
+// commandTransport creates a new transport for a command
+func commandTransport(cmd string, args []string, env ...string) mcp.Transport {
+	command := exec.Command(cmd, args...)
+	command.Env = os.Environ()
+	command.Env = append(command.Env, env...)
+
+	transport := &mcp.CommandTransport{Command: command}
+	return transport
+}
 
 func main() {
 	// Parse command line arguments
@@ -58,6 +69,8 @@ func main() {
 		cancel()
 	}()
 
+	cfg := config.Load()
+
 	// Set MCP servers
 	bashMCPServerTransport, bashMCPServerClient := mcp.NewInMemoryTransports()
 
@@ -66,6 +79,16 @@ func main() {
 			fmt.Fprintf(os.Stderr, "MCP server error: %v\n", err)
 		}
 	}()
+
+	transports := []mcp.Transport{bashMCPServerClient}
+
+	for _, c := range cfg.MCPServers {
+		envs := []string{}
+		for k, v := range c.Env {
+			envs = append(envs, fmt.Sprintf("%s=%s", k, v))
+		}
+		transports = append(transports, commandTransport(c.Command, c.Args, envs...))
+	}
 
 	// Determine mode based on flags
 	if *heightFlag != "" {
@@ -82,14 +105,14 @@ func main() {
 			}
 		} else {
 			// TUI mode
-			if err := runTUI(ctx, height, bashMCPServerClient); err != nil {
+			if err := runTUI(ctx, cfg, height, transports...); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
 		}
 	} else {
 		// CLI mode (original behavior)
-		if err := runner(ctx, bashMCPServerClient); err != nil {
+		if err := runner(ctx, cfg, transports...); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
@@ -163,8 +186,7 @@ func parseHeight(s string) int {
 }
 
 // runTUI runs the Bubble Tea TUI
-func runTUI(ctx context.Context, height int, transports ...mcp.Transport) error {
-	cfg := config.Load()
+func runTUI(ctx context.Context, cfg types.Config, height int, transports ...mcp.Transport) error {
 
 	model := tui.NewModel(ctx, cfg, height, transports...)
 

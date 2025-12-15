@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 
+	"github.com/mudler/aish/types"
+
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/mudler/cogito"
 	openai "github.com/sashabaranov/go-openai"
@@ -56,13 +58,6 @@ type Session struct {
 	callbacks Callbacks
 }
 
-// Config holds configuration for creating a new session
-type Config struct {
-	Model   string
-	APIKey  string
-	BaseURL string
-}
-
 // CommandTransport creates a new transport for a command
 func CommandTransport(cmd string, args []string, env ...string) mcp.Transport {
 	command := exec.Command(cmd, args...)
@@ -74,7 +69,7 @@ func CommandTransport(cmd string, args []string, env ...string) mcp.Transport {
 }
 
 // NewSession creates a new chat session
-func NewSession(ctx context.Context, cfg Config, callbacks Callbacks, transports ...mcp.Transport) (*Session, error) {
+func NewSession(ctx context.Context, cfg types.Config, callbacks Callbacks, transports ...mcp.Transport) (*Session, error) {
 	llm := cogito.NewOpenAILLM(cfg.Model, cfg.APIKey, cfg.BaseURL)
 
 	client := mcp.NewClient(&mcp.Implementation{Name: "aish", Version: "v1.0.0"}, nil)
@@ -197,4 +192,3 @@ func (s *Session) Close() error {
 	}
 	return nil
 }
-
