@@ -29,8 +29,9 @@ type ToolCallRequest struct {
 
 // ToolCallResponse represents the user's decision on a tool call
 type ToolCallResponse struct {
-	Approved   bool
-	Adjustment string
+	Approved    bool
+	Adjustment  string
+	AlwaysAllow bool // Add tool to session allow list
 }
 
 // Callbacks defines the interface for UI interactions
@@ -58,6 +59,7 @@ type Session struct {
 	callbacks     Callbacks
 	systemPrompt  string
 	cogitoOptions types.AgentOptions
+	allowedTools  map[string]bool // Tools that don't need approval this session
 }
 
 // CommandTransport creates a new transport for a command
@@ -94,6 +96,7 @@ func NewSession(ctx context.Context, cfg types.Config, callbacks Callbacks, tran
 		callbacks:     callbacks,
 		systemPrompt:  cfg.GetPrompt(),
 		cogitoOptions: cfg.AgentOptions,
+		allowedTools:  make(map[string]bool),
 	}, nil
 }
 
@@ -126,6 +129,11 @@ func (s *Session) SendMessage(text string) (string, error) {
 		}),
 		cogito.WithMCPs(s.clients...),
 		cogito.WithToolCallBack(func(tool *cogito.ToolChoice, state *cogito.SessionState) cogito.ToolCallDecision {
+			// Check if tool is in the allow list
+			if s.allowedTools[tool.Name] {
+				return cogito.ToolCallDecision{Approved: true}
+			}
+
 			if s.callbacks.OnToolCall == nil {
 				return cogito.ToolCallDecision{Approved: true}
 			}
@@ -140,6 +148,11 @@ func (s *Session) SendMessage(text string) (string, error) {
 				Arguments: string(args),
 				Reasoning: tool.Reasoning,
 			})
+
+			// Add to allow list if requested
+			if resp.AlwaysAllow && resp.Approved {
+				s.allowedTools[tool.Name] = true
+			}
 
 			return cogito.ToolCallDecision{
 				Approved:   resp.Approved,

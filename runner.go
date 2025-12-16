@@ -6,47 +6,156 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/mudler/aish/chat"
 	"github.com/mudler/aish/types"
 )
 
+// ANSI color codes
+const (
+	colorReset  = "\033[0m"
+	colorCyan   = "\033[36m"
+	colorYellow = "\033[33m"
+	colorGreen  = "\033[32m"
+	colorGray   = "\033[90m"
+	colorBold   = "\033[1m"
+	colorRed    = "\033[31m"
+)
+
+// Spinner frames for animated display
+var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+// spinner manages an animated spinner for CLI output
+type spinner struct {
+	mu       sync.Mutex
+	active   bool
+	message  string
+	stopChan chan struct{}
+	doneChan chan struct{}
+}
+
+func newSpinner() *spinner {
+	return &spinner{
+		stopChan: make(chan struct{}),
+		doneChan: make(chan struct{}),
+	}
+}
+
+func (s *spinner) start(message string) {
+	s.mu.Lock()
+	if s.active {
+		s.mu.Unlock()
+		return
+	}
+	s.active = true
+	s.message = message
+	s.stopChan = make(chan struct{})
+	s.doneChan = make(chan struct{})
+	s.mu.Unlock()
+
+	go func() {
+		frame := 0
+		ticker := time.NewTicker(80 * time.Millisecond)
+		defer ticker.Stop()
+		defer close(s.doneChan)
+
+		for {
+			select {
+			case <-s.stopChan:
+				// Clear the spinner line
+				fmt.Print("\r\033[K")
+				return
+			case <-ticker.C:
+				s.mu.Lock()
+				msg := s.message
+				s.mu.Unlock()
+				fmt.Printf("\r%s%s %s%s", colorCyan, spinnerFrames[frame], msg, colorReset)
+				frame = (frame + 1) % len(spinnerFrames)
+			}
+		}
+	}()
+}
+
+func (s *spinner) update(message string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.message = message
+}
+
+func (s *spinner) stop() {
+	s.mu.Lock()
+	if !s.active {
+		s.mu.Unlock()
+		return
+	}
+	s.active = false
+	s.mu.Unlock()
+
+	close(s.stopChan)
+	<-s.doneChan
+}
+
 func runner(ctx context.Context, cfg types.Config, transports ...mcp.Transport) error {
 	reader := bufio.NewReader(os.Stdin)
+	spin := newSpinner()
 
 	callbacks := chat.Callbacks{
 		OnStatus: func(status string) {
-			fmt.Println("Status: " + status)
+			spin.update(status)
 		},
 		OnReasoning: func(reasoning string) {
-			fmt.Println("Reasoning: " + reasoning)
+			spin.stop()
+			fmt.Printf("%s💭 %s%s\n", colorGray, reasoning, colorReset)
+			spin.start("Processing...")
 		},
 		OnToolCall: func(req chat.ToolCallRequest) chat.ToolCallResponse {
-			fmt.Printf("The agent wants to run the tool %s with the following arguments: %s\nReasoning: %s\n",
-				req.Name, req.Arguments, req.Reasoning)
-			fmt.Println("Do you want to run the tool? (y/n/adjust)")
+			spin.stop()
+			fmt.Println()
+			fmt.Println(strings.Repeat("─", 50))
+			fmt.Printf("%s%s🔧 Tool Request: %s%s\n", colorBold, colorYellow, req.Name, colorReset)
+			fmt.Printf("%sArguments:%s %s\n", colorGray, colorReset, req.Arguments)
+			if req.Reasoning != "" {
+				fmt.Printf("%s💭 %s%s\n", colorGray, req.Reasoning, colorReset)
+			}
+			fmt.Println(strings.Repeat("─", 50))
+			fmt.Printf("\n%s[y]es  [a]lways  [n]o  or type adjustment:%s ", colorCyan, colorReset)
 
 			text, _ := reader.ReadString('\n')
 			text = strings.TrimSpace(text)
+			fmt.Println()
 
-			switch text {
-			case "y":
-				return chat.ToolCallResponse{Approved: true}
-			case "n":
-				return chat.ToolCallResponse{Approved: false}
+			var response chat.ToolCallResponse
+			switch strings.ToLower(text) {
+			case "y", "yes":
+				response = chat.ToolCallResponse{Approved: true}
+				spin.start("Executing tool...")
+			case "a", "always":
+				response = chat.ToolCallResponse{Approved: true, AlwaysAllow: true}
+				fmt.Printf("%s✓ Tool '%s' added to allow list for this session%s\n", colorGreen, req.Name, colorReset)
+				spin.start("Executing tool...")
+			case "n", "no":
+				response = chat.ToolCallResponse{Approved: false}
+				fmt.Printf("%s✗ Tool execution denied%s\n", colorRed, colorReset)
 			default:
-				return chat.ToolCallResponse{
-					Approved:   true,
-					Adjustment: text,
-				}
+				response = chat.ToolCallResponse{Approved: true, Adjustment: text}
+				spin.start("Executing adjusted tool...")
 			}
+			return response
 		},
 		OnResponse: func(response string) {
+			spin.stop()
+			fmt.Println()
+			fmt.Println(strings.Repeat("─", 50))
+			fmt.Printf("%s%s🤖 Assistant:%s\n", colorBold, colorGreen, colorReset)
 			fmt.Println(response)
+			fmt.Println(strings.Repeat("─", 50))
 		},
 		OnError: func(err error) {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			spin.stop()
+			fmt.Fprintf(os.Stderr, "%s✗ Error: %v%s\n", colorRed, err, colorReset)
 		},
 	}
 
@@ -56,8 +165,12 @@ func runner(ctx context.Context, cfg types.Config, transports ...mcp.Transport) 
 	}
 	defer session.Close()
 
+	fmt.Printf("%s%s🤖 AI Shell Assistant%s\n", colorBold, colorCyan, colorReset)
+	fmt.Println(strings.Repeat("─", 50))
+	fmt.Printf("%sType your message and press Enter. Ctrl+C to exit.%s\n\n", colorGray, colorReset)
+
 	for {
-		fmt.Print("> ")
+		fmt.Printf("%s>%s ", colorCyan, colorReset)
 		text, err := reader.ReadString('\n')
 		if err != nil {
 			return err
@@ -67,9 +180,13 @@ func runner(ctx context.Context, cfg types.Config, transports ...mcp.Transport) 
 			continue
 		}
 
+		fmt.Println()
+		spin.start("Thinking...")
 		_, err = session.SendMessage(text)
+		spin.stop()
 		if err != nil {
-			return err
+			fmt.Fprintf(os.Stderr, "%s✗ Error: %v%s\n", colorRed, err, colorReset)
 		}
+		fmt.Println()
 	}
 }

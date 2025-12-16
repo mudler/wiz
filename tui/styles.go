@@ -49,8 +49,45 @@ var (
 	borderStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("238"))
+
+	// Thinking style - for active processing
+	thinkingStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("39")).
+			Bold(true)
+
+	// Tool name style - highlight tool names
+	toolNameStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("214")).
+			Bold(true)
+
+	// Tool executing style
+	toolExecutingStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("76")).
+				Italic(true)
+
+	// Section header style
+	sectionHeaderStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("99")).
+				Bold(true)
+
+	// Box style for sections
+	thinkingBoxStyle = lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color("39")).
+				Padding(0, 1)
+
+	// Tool request box style
+	toolRequestBoxStyle = lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color("214")).
+				Padding(0, 1)
+
+	// Prompt hint style
+	promptHintStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("39")).
+			Bold(true)
+
+	// Dimmed text style
+	dimmedStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("241"))
 )
-
-
-
-

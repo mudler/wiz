@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/mudler/aish/chat"
 )
@@ -51,6 +52,9 @@ type Model struct {
 	// Tool approval state
 	pendingTool      *chat.ToolCallRequest
 	awaitingApproval bool
+
+	// Animation state
+	statusPhase int
 
 	// Channels for async communication with callbacks
 	statusChan       chan string
@@ -98,7 +102,8 @@ func NewModel(ctx context.Context, cfg types.Config, height int, transports ...m
 	vp.SetContent("Welcome! Type your question and press Enter.\n\nPress Esc to exit.")
 
 	s := spinner.New()
-	s.Spinner = spinner.Dot
+	s.Spinner = spinner.Points
+	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
 
 	// Calculate max height - negative means percentage, positive means lines
 	maxH := height
@@ -261,6 +266,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case spinner.TickMsg:
 		m.spinner, cmd = m.spinner.Update(msg)
 		cmds = append(cmds, cmd)
+		// Rotate status phase for animated messages
+		if m.loading {
+			m.statusPhase = (m.statusPhase + 1) % 12
+			m.updateViewport()
+		}
 	}
 
 	// Update textarea
@@ -328,6 +338,8 @@ func (m Model) handleToolApproval(input string) (tea.Model, tea.Cmd) {
 	switch input {
 	case "y", "yes":
 		response = chat.ToolCallResponse{Approved: true}
+	case "a", "always":
+		response = chat.ToolCallResponse{Approved: true, AlwaysAllow: true}
 	case "n", "no":
 		response = chat.ToolCallResponse{Approved: false}
 	default:
@@ -371,6 +383,25 @@ func (m *Model) updateDimensions() {
 	m.textarea.SetWidth(m.width - 2)
 }
 
+// getThinkingStatus returns an animated thinking status message
+func (m *Model) getThinkingStatus() string {
+	phases := []string{
+		"Thinking",
+		"Thinking.",
+		"Thinking..",
+		"Thinking...",
+		"Processing",
+		"Processing.",
+		"Processing..",
+		"Processing...",
+		"Analyzing",
+		"Analyzing.",
+		"Analyzing..",
+		"Analyzing...",
+	}
+	return phases[m.statusPhase%len(phases)]
+}
+
 // updateViewport updates the viewport content with chat messages
 func (m *Model) updateViewport() {
 	var sb strings.Builder
@@ -378,36 +409,55 @@ func (m *Model) updateViewport() {
 	for _, msg := range m.messages {
 		switch msg.Role {
 		case "user":
-			sb.WriteString(userStyle.Render("You: "))
+			sb.WriteString(userStyle.Render("👤 You: "))
 			sb.WriteString(msg.Content)
 			sb.WriteString("\n\n")
 		case "assistant":
-			sb.WriteString(assistantStyle.Render("Assistant: "))
+			sb.WriteString(assistantStyle.Render("🤖 Assistant: "))
 			sb.WriteString(msg.Content)
 			sb.WriteString("\n\n")
 		case "error":
-			sb.WriteString(errorStyle.Render("Error: "))
+			sb.WriteString(errorStyle.Render("✗ Error: "))
 			sb.WriteString(msg.Content)
 			sb.WriteString("\n\n")
 		}
 	}
 
 	if m.loading {
-		sb.WriteString(statusStyle.Render(m.spinner.View() + " " + m.status))
-		sb.WriteString("\n")
-		if m.reasoning != "" {
-			sb.WriteString(reasoningStyle.Render("Reasoning: " + m.reasoning))
-			sb.WriteString("\n")
+		// Use animated status if no specific status is set
+		displayStatus := m.status
+		if displayStatus == "" || displayStatus == "Thinking..." {
+			displayStatus = m.getThinkingStatus()
 		}
+
+		// Build thinking box content
+		var thinkingContent strings.Builder
+		thinkingContent.WriteString(thinkingStyle.Render(m.spinner.View() + " " + displayStatus))
+		if m.reasoning != "" {
+			thinkingContent.WriteString("\n")
+			thinkingContent.WriteString(reasoningStyle.Render("💭 " + m.reasoning))
+		}
+
+		sb.WriteString(thinkingBoxStyle.Render(thinkingContent.String()))
+		sb.WriteString("\n")
 	}
 
 	if m.awaitingApproval && m.pendingTool != nil {
-		sb.WriteString(toolStyle.Render(fmt.Sprintf(
-			"Tool Request: %s\nArguments: %s\nReasoning: %s\n\nType 'y' to approve, 'n' to deny, or provide adjustment:",
-			m.pendingTool.Name,
-			m.pendingTool.Arguments,
-			m.pendingTool.Reasoning,
-		)))
+		// Build tool request box content
+		var toolContent strings.Builder
+		toolContent.WriteString(toolNameStyle.Render("🔧 " + m.pendingTool.Name))
+		toolContent.WriteString("\n\n")
+		toolContent.WriteString(dimmedStyle.Render("Arguments: "))
+		toolContent.WriteString(m.pendingTool.Arguments)
+		if m.pendingTool.Reasoning != "" {
+			toolContent.WriteString("\n")
+			toolContent.WriteString(reasoningStyle.Render("💭 " + m.pendingTool.Reasoning))
+		}
+		toolContent.WriteString("\n\n")
+		toolContent.WriteString(promptHintStyle.Render("[y]es  [a]lways  [n]o  "))
+		toolContent.WriteString(dimmedStyle.Render("or type adjustment"))
+
+		sb.WriteString(toolRequestBoxStyle.Render(toolContent.String()))
 		sb.WriteString("\n")
 	}
 
