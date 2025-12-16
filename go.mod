@@ -9,7 +9,7 @@ require (
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/modelcontextprotocol/go-sdk v1.0.0
-	github.com/mudler/cogito v0.7.0
+	github.com/mudler/cogito v0.7.1-0.20251216204542-ab4090ff35d2
 	github.com/sashabaranov/go-openai v1.41.2
 	gopkg.in/yaml.v3 v3.0.1
 )

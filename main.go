@@ -16,6 +16,7 @@ import (
 	"github.com/mudler/aish/config"
 	"github.com/mudler/aish/tui"
 	"github.com/mudler/aish/types"
+	"github.com/mudler/cogito/pkg/xlog"
 )
 
 var (
@@ -70,6 +71,12 @@ func main() {
 	}()
 
 	cfg := config.Load()
+
+	if cfg.LogLevel == "" {
+		cfg.LogLevel = "error"
+	}
+
+	xlog.SetLogger(xlog.NewLogger(xlog.LogLevel(cfg.LogLevel), os.Getenv("LOG_FORMAT")))
 
 	// Set MCP servers
 	bashMCPServerTransport, bashMCPServerClient := mcp.NewInMemoryTransports()

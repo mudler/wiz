@@ -192,3 +192,4 @@ func (s *Session) Close() error {
 	}
 	return nil
 }
+

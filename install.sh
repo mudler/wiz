@@ -253,12 +253,24 @@ main() {
     echo "  - Run 'aish --height 40%' for TUI mode"
     echo ""
     echo "Configuration:"
-    echo "  Set these environment variables:"
-    echo "    export MODEL=<model-name>"
-    echo "    export API_KEY=<your-api-key>"
-    echo "    export BASE_URL=<api-base-url>"
+    echo "  Write a config file in \$XDG_CONFIG_HOME/aish/config.yaml or ~/.config/aish/config.yaml or ~/.aish.yaml"
+    echo ""
+    echo "File example:"
+    echo ""
+    echo "model: gpt-4o-mini"
+    echo "api_key: sk-1234567890"
+    echo "base_url: https://api.openai.com/v1"
+    echo "mcp_servers:"
+    echo "  - name: bash"
+    echo "    command: bash"
+    echo "    args:"
+    echo "      - -c"
+    echo "      - echo 'Hello, world!'"
+    echo "    env:"
+    echo "      foo: bar"
     echo ""
 }
 
 main "$@"
+
 
