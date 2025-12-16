@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/mudler/aish/chat"
-	"github.com/mudler/aish/types"
+	"github.com/mudler/wiz/chat"
+	"github.com/mudler/wiz/types"
 )
 
 // ANSI color codes
@@ -23,6 +23,7 @@ const (
 	colorGray   = "\033[90m"
 	colorBold   = "\033[1m"
 	colorRed    = "\033[31m"
+	colorPurple = "\033[35m"
 )
 
 // Spinner frames for animated display
@@ -109,7 +110,7 @@ func runner(ctx context.Context, cfg types.Config, transports ...mcp.Transport) 
 		OnReasoning: func(reasoning string) {
 			spin.stop()
 			fmt.Printf("%s💭 %s%s\n", colorGray, reasoning, colorReset)
-			spin.start("Processing...")
+			spin.start("Conjuring...")
 		},
 		OnToolCall: func(req chat.ToolCallRequest) chat.ToolCallResponse {
 			spin.stop()
@@ -149,7 +150,7 @@ func runner(ctx context.Context, cfg types.Config, transports ...mcp.Transport) 
 			spin.stop()
 			fmt.Println()
 			fmt.Println(strings.Repeat("─", 50))
-			fmt.Printf("%s%s🤖 Assistant:%s\n", colorBold, colorGreen, colorReset)
+			fmt.Printf("%s%s🧙 Wiz:%s\n", colorBold, colorPurple, colorReset)
 			fmt.Println(response)
 			fmt.Println(strings.Repeat("─", 50))
 		},
@@ -165,9 +166,10 @@ func runner(ctx context.Context, cfg types.Config, transports ...mcp.Transport) 
 	}
 	defer session.Close()
 
-	fmt.Printf("%s%s🤖 AI Shell Assistant%s\n", colorBold, colorCyan, colorReset)
+	fmt.Printf("%s%s✨ [◠ ◠] wiz%s\n", colorBold, colorPurple, colorReset)
 	fmt.Println(strings.Repeat("─", 50))
-	fmt.Printf("%sType your message and press Enter. Ctrl+C to exit.%s\n\n", colorGray, colorReset)
+	fmt.Printf("%sYour terminal wizard awaits. Type your command and press Enter.%s\n", colorGray, colorReset)
+	fmt.Printf("%sCtrl+C to exit.%s\n\n", colorGray, colorReset)
 
 	for {
 		fmt.Printf("%s>%s ", colorCyan, colorReset)
@@ -181,7 +183,7 @@ func runner(ctx context.Context, cfg types.Config, transports ...mcp.Transport) 
 		}
 
 		fmt.Println()
-		spin.start("Thinking...")
+		spin.start("Casting spell...")
 		_, err = session.SendMessage(text)
 		spin.stop()
 		if err != nil {

@@ -4,7 +4,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/mudler/aish/types"
+	"github.com/mudler/wiz/types"
 
 	"gopkg.in/yaml.v3"
 )
@@ -23,14 +23,14 @@ func configPaths() []string {
 
 	// First priority: XDG config directory
 	if xdgConfig := os.Getenv("XDG_CONFIG_HOME"); xdgConfig != "" {
-		paths = append(paths, filepath.Join(xdgConfig, "aish", "config.yaml"))
+		paths = append(paths, filepath.Join(xdgConfig, "wiz", "config.yaml"))
 	}
 
-	// Second priority: ~/.config/aish/config.yaml
+	// Second priority: ~/.config/wiz/config.yaml
 	if home, err := os.UserHomeDir(); err == nil {
-		paths = append(paths, filepath.Join(home, ".config", "aish", "config.yaml"))
-		// Third priority: ~/.aish.yaml
-		paths = append(paths, filepath.Join(home, ".aish.yaml"))
+		paths = append(paths, filepath.Join(home, ".config", "wiz", "config.yaml"))
+		// Third priority: ~/.wiz.yaml
+		paths = append(paths, filepath.Join(home, ".wiz.yaml"))
 	}
 
 	return paths

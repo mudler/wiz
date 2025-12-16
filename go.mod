@@ -1,4 +1,4 @@
-module github.com/mudler/aish
+module github.com/mudler/wiz
 
 go 1.24.1
 

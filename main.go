@@ -13,10 +13,10 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/mudler/aish/config"
-	"github.com/mudler/aish/tui"
-	"github.com/mudler/aish/types"
 	"github.com/mudler/cogito/pkg/xlog"
+	"github.com/mudler/wiz/config"
+	"github.com/mudler/wiz/tui"
+	"github.com/mudler/wiz/types"
 )
 
 var (
@@ -44,7 +44,7 @@ func main() {
 
 	// Handle version flag
 	if *versionFlag {
-		fmt.Printf("aish %s\n", version)
+		fmt.Printf("wiz %s\n", version)
 		os.Exit(0)
 	}
 
@@ -131,7 +131,7 @@ func inTmux() bool {
 	return os.Getenv("TMUX") != "" && os.Getenv("TMUX_PANE") != ""
 }
 
-// runTmuxSplit runs aish in a tmux split pane (like fzf-tmux -d)
+// runTmuxSplit runs wiz in a tmux split pane (like fzf-tmux -d)
 func runTmuxSplit(height string) error {
 	// Get current working directory
 	dir, err := os.Getwd()
@@ -139,15 +139,15 @@ func runTmuxSplit(height string) error {
 		dir = "."
 	}
 
-	// Get the aish executable path
+	// Get the wiz executable path
 	executable, err := os.Executable()
 	if err != nil {
-		executable = "aish"
+		executable = "wiz"
 	}
 
 	// Build the command to run inside the split pane
 	// Use --no-tmux to prevent infinite recursion
-	aishCmd := fmt.Sprintf("%s --height %s --no-tmux", executable, height)
+	wizCmd := fmt.Sprintf("%s --height %s --no-tmux", executable, height)
 
 	// tmux split-window arguments
 	// -d: don't switch focus to new pane initially (we'll switch after)
@@ -161,7 +161,7 @@ func runTmuxSplit(height string) error {
 		"-v",         // vertical split (creates pane below)
 		"-l", height, // height of the new pane
 		"-c", dir, // working directory
-		"sh", "-c", aishCmd,
+		"sh", "-c", wizCmd,
 	}
 
 	cmd := exec.Command("tmux", tmuxArgs...)
@@ -198,7 +198,7 @@ func runTUI(ctx context.Context, cfg types.Config, height int, transports ...mcp
 	model := tui.NewModel(ctx, cfg, height, transports...)
 
 	// Open /dev/tty directly for TUI - this is crucial when stdout is being captured
-	// (e.g., when run from a shell widget like `output=$(aish --height 40%)`)
+	// (e.g., when run from a shell widget like `output=$(wiz --height 40%)`)
 	ttyIn, err := os.OpenFile("/dev/tty", os.O_RDONLY, 0)
 	if err != nil {
 		return fmt.Errorf("failed to open /dev/tty for reading: %w", err)
@@ -308,23 +308,23 @@ func getInitScript(shell string) string {
 	}
 }
 
-const zshInitScript = `# aish shell integration for zsh
+const zshInitScript = `# wiz shell integration for zsh
 # Add this to your ~/.zshrc:
-#   eval "$(aish --init zsh)"
+#   eval "$(wiz --init zsh)"
 
-__aish_widget() {
+__wiz_widget() {
   local output
   # Save the current buffer
   local saved_buffer="$BUFFER"
   local saved_cursor="$CURSOR"
   
-  # Run aish in TUI mode
+  # Summon the wizard in TUI mode
   # Uses tmux popup when in tmux, otherwise uses alt screen
   # The TUI writes to /dev/tty directly, stdout captures only the final output
-  output=$(aish --height 50%)
+  output=$(wiz --height 50%)
   local ret=$?
   
-  # If aish output a command, insert it
+  # If wiz output a command, insert it
   if [[ -n "$output" ]]; then
     BUFFER="${saved_buffer:0:$saved_cursor}${output}${saved_buffer:$saved_cursor}"
     CURSOR=$((saved_cursor + ${#output}))
@@ -334,25 +334,25 @@ __aish_widget() {
   return $ret
 }
 
-zle -N __aish_widget
-bindkey '^ ' __aish_widget  # Ctrl+Space
+zle -N __wiz_widget
+bindkey '^ ' __wiz_widget  # Ctrl+Space
 `
 
-const bashInitScript = `# aish shell integration for bash
+const bashInitScript = `# wiz shell integration for bash
 # Add this to your ~/.bashrc:
-#   eval "$(aish --init bash)"
+#   eval "$(wiz --init bash)"
 
-__aish_widget() {
+__wiz_widget() {
   local output
   local saved_line="$READLINE_LINE"
   local saved_point="$READLINE_POINT"
   
-  # Run aish in TUI mode
+  # Summon the wizard in TUI mode
   # Uses tmux popup when in tmux, otherwise uses alt screen
   # The TUI writes to /dev/tty directly, stdout captures only the final output
-  output=$(aish --height 50%)
+  output=$(wiz --height 50%)
   
-  # If aish output a command, insert it
+  # If wiz output a command, insert it
   if [[ -n "$output" ]]; then
     READLINE_LINE="${saved_line:0:$saved_point}${output}${saved_line:$saved_point}"
     READLINE_POINT=$((saved_point + ${#output}))
@@ -360,17 +360,18 @@ __aish_widget() {
 }
 
 # Bind Ctrl+Space
-bind -x '"\C- ": __aish_widget'
+bind -x '"\C- ": __wiz_widget'
 `
 
-const fishInitScript = `# aish shell integration for fish
+const fishInitScript = `# wiz shell integration for fish
 # Add this to your ~/.config/fish/config.fish:
-#   aish --init fish | source
+#   wiz --init fish | source
 
-function __aish_widget
+function __wiz_widget
+  # Summon the wizard in TUI mode
   # Uses tmux popup when in tmux, otherwise uses alt screen
   # The TUI writes to /dev/tty directly, stdout captures only the final output
-  set -l output (aish --height 50%)
+  set -l output (wiz --height 50%)
   
   if test -n "$output"
     commandline -i "$output"
@@ -379,5 +380,5 @@ function __aish_widget
   commandline -f repaint
 end
 
-bind \c\  __aish_widget  # Ctrl+Space
+bind \c\  __wiz_widget  # Ctrl+Space
 `

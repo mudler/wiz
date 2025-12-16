@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
-#     ___    _      __  
-#    /   |  (_)____/ /_ 
-#   / /| | / / ___/ __ \
-#  / ___ |/ (__  ) / / /
-# /_/  |_/_/____/_/ /_/ 
+#  ╭─────╮
+#  │ ◠ ◠ │    _      ___
+#  │  ▽  │   | | /| / (_)___
+#  ╰──┬──╯   | |/ |/ / |_ /
+#    /|\     |__/|__/_//__/
+#   / | \
+#          your terminal wizard
 #
-# aish installer
+# wiz installer
 #
-# This script installs aish and sets up shell integration.
+# This script installs wiz and sets up shell integration.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/mudler/aish/main/install.sh | bash
-#   curl -fsSL https://raw.githubusercontent.com/mudler/aish/main/install.sh | zsh
+#   curl -fsSL https://raw.githubusercontent.com/mudler/wiz/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/mudler/wiz/main/install.sh | zsh
 #   OR
 #   ./install.sh
 #
@@ -21,14 +23,16 @@
 set -e
 
 # Configuration
-INSTALL_DIR="${AISH_INSTALL_DIR:-$HOME/.local/bin}"
-SHELL_DIR="${AISH_SHELL_DIR:-$HOME/.config/aish/shell}"
+INSTALL_DIR="${WIZ_INSTALL_DIR:-$HOME/.local/bin}"
+SHELL_DIR="${WIZ_SHELL_DIR:-$HOME/.config/wiz/shell}"
 
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
+PURPLE='\033[0;35m'
+BOLD='\033[1m'
 NC='\033[0m' # No Color
 
 # Print functions
@@ -134,7 +138,7 @@ detect_shell() {
 
 # Build from source
 build_from_source() {
-    info "Building aish from source..."
+    info "Building wiz from source..."
     
     # Check for Go
     if ! command -v go &> /dev/null; then
@@ -146,13 +150,13 @@ build_from_source() {
     
     # Build
     cd "$SCRIPT_DIR"
-    go build -o aish .
+    go build -o wiz .
     
     # Install
     mkdir -p "$INSTALL_DIR"
-    mv aish "$INSTALL_DIR/"
+    mv wiz "$INSTALL_DIR/"
     
-    success "Built and installed aish to $INSTALL_DIR/aish"
+    success "Built and installed wiz to $INSTALL_DIR/wiz"
 }
 
 # Install shell integration
@@ -165,13 +169,13 @@ install_shell_integration() {
     if [[ -z "$RC_FILE" ]]; then
         warn "Could not detect shell configuration file. Please manually add:"
         echo ""
-        echo "  eval \"\$(aish --init <your-shell>)\""
+        echo "  eval \"\$(wiz --init <your-shell>)\""
         echo ""
         return
     fi
     
     # Check if already configured
-    if grep -q 'aish --init' "$RC_FILE" 2>/dev/null; then
+    if grep -q 'wiz --init' "$RC_FILE" 2>/dev/null; then
         info "Shell integration already configured in $RC_FILE"
         return
     fi
@@ -180,8 +184,8 @@ install_shell_integration() {
     info "Adding shell integration to $RC_FILE"
     
     echo "" >> "$RC_FILE"
-    echo "# aish shell integration" >> "$RC_FILE"
-    echo "eval \"\$(aish --init $CURRENT_SHELL)\"" >> "$RC_FILE"
+    echo "# wiz shell integration" >> "$RC_FILE"
+    echo "eval \"\$(wiz --init $CURRENT_SHELL)\"" >> "$RC_FILE"
     
     success "Added shell integration to $RC_FILE"
     echo ""
@@ -210,7 +214,7 @@ update_path() {
         if [[ -n "$RC_FILE" ]]; then
             if ! grep -q "export PATH=.*$INSTALL_DIR" "$RC_FILE" 2>/dev/null; then
                 echo "" >> "$RC_FILE"
-                echo "# aish binary" >> "$RC_FILE"
+                echo "# wiz binary" >> "$RC_FILE"
                 echo "export PATH=\"\$PATH:$INSTALL_DIR\"" >> "$RC_FILE"
             fi
         fi
@@ -220,13 +224,15 @@ update_path() {
 # Main installation
 main() {
     echo ""
-    echo "  ___    _      __  "
-    echo " /   |  (_)____/ /_ "
-    echo "/ /| | / / ___/ __ \\"
-    echo "/ ___ |/ (__  ) / / /"
-    echo "/_/  |_/_/____/_/ /_/ "
+    echo -e "${PURPLE}        ╭─────╮${NC}"
+    echo -e "${PURPLE}        │${NC} ◠ ◠ ${PURPLE}│${NC}"
+    echo -e "${PURPLE}        │${NC}  ▽  ${PURPLE}│${NC}"
+    echo -e "${PURPLE}        ╰──┬──╯${NC}"
+    echo -e "${PURPLE}          /|\\\\${NC}"
+    echo -e "${PURPLE}         / | \\\\${NC}"
     echo ""
-    echo "AI Shell Assistant Installer"
+    echo -e "          ${BLUE}${BOLD}wiz${NC}"
+    echo -e "   ${YELLOW}your terminal wizard${NC}"
     echo ""
     
     detect_platform
@@ -248,29 +254,19 @@ main() {
     success "Installation complete!"
     echo ""
     echo "Usage:"
-    echo "  - Press Ctrl+Space to open the AI assistant"
-    echo "  - Run 'aish' for CLI mode"
-    echo "  - Run 'aish --height 40%' for TUI mode"
+    echo "  - Press Ctrl+Space to summon the wizard"
+    echo "  - Run 'wiz' for CLI mode"
+    echo "  - Run 'wiz --height 40%' for TUI mode"
     echo ""
     echo "Configuration:"
-    echo "  Write a config file in \$XDG_CONFIG_HOME/aish/config.yaml or ~/.config/aish/config.yaml or ~/.aish.yaml"
+    echo "  Create a config file at ~/.config/wiz/config.yaml or ~/.wiz.yaml"
     echo ""
-    echo "File example:"
+    echo "Example config:"
     echo ""
-    echo "model: gpt-4o-mini"
-    echo "api_key: sk-1234567890"
-    echo "base_url: https://api.openai.com/v1"
-    echo "mcp_servers:"
-    echo "  - name: bash"
-    echo "    command: bash"
-    echo "    args:"
-    echo "      - -c"
-    echo "      - echo 'Hello, world!'"
-    echo "    env:"
-    echo "      foo: bar"
+    echo "  model: gpt-4o-mini"
+    echo "  api_key: your-api-key"
+    echo "  base_url: https://api.openai.com/v1"
     echo ""
 }
 
 main "$@"
-
-

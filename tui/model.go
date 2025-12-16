@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/mudler/aish/types"
+	"github.com/mudler/wiz/types"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
@@ -13,7 +13,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/mudler/aish/chat"
+	"github.com/mudler/wiz/chat"
 )
 
 // ChatMessage represents a message in the chat history
@@ -89,7 +89,7 @@ func NewModel(ctx context.Context, cfg types.Config, height int, transports ...m
 	ctx, cancel := context.WithCancel(ctx)
 
 	ta := textarea.New()
-	ta.Placeholder = "Ask the assistant..."
+	ta.Placeholder = "Ask the wizard..."
 	ta.Focus()
 	ta.Prompt = "│ "
 	ta.CharLimit = 4096
@@ -99,7 +99,7 @@ func NewModel(ctx context.Context, cfg types.Config, height int, transports ...m
 	ta.KeyMap.InsertNewline.SetEnabled(false) // Enter sends message
 
 	vp := viewport.New(80, 10)
-	vp.SetContent("Welcome! Type your question and press Enter.\n\nPress Esc to exit.")
+	vp.SetContent("✨ Welcome! The wizard awaits your command.\n\nType your question and press Enter. Press Esc to exit.")
 
 	s := spinner.New()
 	s.Spinner = spinner.Points
@@ -383,21 +383,44 @@ func (m *Model) updateDimensions() {
 	m.textarea.SetWidth(m.width - 2)
 }
 
+// Wizard face animation frames - the wizard winks while thinking!
+var wizardFaces = []string{
+	"◠ ◠", // normal
+	"◠ ─", // wink right
+	"◠ ◠", // normal
+	"─ ◠", // wink left
+	"─ ─", // blink
+	"◠ ◠", // normal
+}
+
+// Sparkle animation for the header
+var wizardSparkles = []string{"✨", "⭐", "💫", "✨", "⭐", "💫"}
+
+// getWizardFace returns the current wizard face animation frame
+func (m *Model) getWizardFace() string {
+	return wizardFaces[m.statusPhase%len(wizardFaces)]
+}
+
+// getWizardSparkle returns the current sparkle animation
+func (m *Model) getWizardSparkle() string {
+	return wizardSparkles[m.statusPhase%len(wizardSparkles)]
+}
+
 // getThinkingStatus returns an animated thinking status message
 func (m *Model) getThinkingStatus() string {
 	phases := []string{
-		"Thinking",
-		"Thinking.",
-		"Thinking..",
-		"Thinking...",
-		"Processing",
-		"Processing.",
-		"Processing..",
-		"Processing...",
-		"Analyzing",
-		"Analyzing.",
-		"Analyzing..",
-		"Analyzing...",
+		"Casting spell",
+		"Casting spell.",
+		"Casting spell..",
+		"Casting spell...",
+		"Conjuring",
+		"Conjuring.",
+		"Conjuring..",
+		"Conjuring...",
+		"Summoning wisdom",
+		"Summoning wisdom.",
+		"Summoning wisdom..",
+		"Summoning wisdom...",
 	}
 	return phases[m.statusPhase%len(phases)]
 }
@@ -413,7 +436,7 @@ func (m *Model) updateViewport() {
 			sb.WriteString(msg.Content)
 			sb.WriteString("\n\n")
 		case "assistant":
-			sb.WriteString(assistantStyle.Render("🤖 Assistant: "))
+			sb.WriteString(assistantStyle.Render("🧙 Wiz: "))
 			sb.WriteString(msg.Content)
 			sb.WriteString("\n\n")
 		case "error":
@@ -473,8 +496,15 @@ func (m Model) View() string {
 
 	var sb strings.Builder
 
-	// Header
-	sb.WriteString(headerStyle.Render("🤖 AI Shell Assistant"))
+	// Header with animated wizard
+	sparkle := m.getWizardSparkle()
+	if m.loading {
+		// Animated wizard face when loading
+		face := m.getWizardFace()
+		sb.WriteString(headerStyle.Render(fmt.Sprintf("%s [%s] wiz", sparkle, face)))
+	} else {
+		sb.WriteString(headerStyle.Render(fmt.Sprintf("%s [◠ ◠] wiz", sparkle)))
+	}
 	sb.WriteString("\n")
 	sb.WriteString(strings.Repeat("─", m.width))
 	sb.WriteString("\n")
@@ -491,7 +521,7 @@ func (m Model) View() string {
 	if m.sessionReady {
 		sb.WriteString(m.textarea.View())
 	} else {
-		sb.WriteString(m.spinner.View() + " Initializing session...")
+		sb.WriteString(m.spinner.View() + " Summoning the wizard...")
 	}
 
 	// Help text

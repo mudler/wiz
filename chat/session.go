@@ -7,7 +7,7 @@ import (
 	"os"
 	"os/exec"
 
-	"github.com/mudler/aish/types"
+	"github.com/mudler/wiz/types"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/mudler/cogito"
