@@ -9,6 +9,14 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const defaultPrompt = `
+You are a Operative System terminal assistant that helps the user into automatizing common tasks, and can also do perform coding tasks.
+You will use the tools at your disposal to fullfill the user request, and, for instance run bash scripts to execute and automate things.
+
+Current directory: {{.CurrentDirectory}}
+Current user: {{.CurrentUser}}
+`
+
 // configPaths returns the list of config file paths to try, in order of priority
 func configPaths() []string {
 	var paths []string
@@ -67,13 +75,7 @@ func Load() types.Config {
 	}
 
 	if cfg.Prompt == "" {
-		cfg.Prompt = `
-You are a Operative System terminal assistant that helps the user into automatizing common tasks, and can also do perform coding tasks.
-You will use the tools at your disposal to fullfill the user request, and, for instance run bash scripts to execute and automate things.
-
-Current directory: {{.CurrentDirectory}}
-Current user: {{.CurrentUser}}
-`
+		cfg.Prompt = defaultPrompt
 	}
 
 	// Set default cogito options
