@@ -51,6 +51,14 @@
 curl -fsSL https://raw.githubusercontent.com/mudler/wiz/main/install.sh | bash
 ```
 
+Or, if you use zsh:
+
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mudler/wiz/main/install.sh | zsh
+```
+
+
 ### From Source
 
 ```bash
@@ -130,6 +138,8 @@ mcp_servers:
       - "-y"
       - "@anthropic/mcp-filesystem"
       - "/home/user"
+    env:
+      foo: bar
 ```
 
 ### Environment Variables
@@ -192,9 +202,3 @@ When running inside tmux, wiz automatically uses a split pane for the TUI. Use `
 ## License
 
 MIT
-
----
-
-<p align="center">
-  Made with ✨ magic
-</p>
