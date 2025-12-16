@@ -50,12 +50,13 @@ type Callbacks struct {
 
 // Session represents a chat session with the AI assistant
 type Session struct {
-	ctx       context.Context
-	llm       cogito.LLM
-	clients   []*mcp.ClientSession
-	fragment  cogito.Fragment
-	messages  []openai.ChatCompletionMessage
-	callbacks Callbacks
+	ctx          context.Context
+	llm          cogito.LLM
+	clients      []*mcp.ClientSession
+	fragment     cogito.Fragment
+	messages     []openai.ChatCompletionMessage
+	callbacks    Callbacks
+	systemPrompt string
 }
 
 // CommandTransport creates a new transport for a command
@@ -84,17 +85,21 @@ func NewSession(ctx context.Context, cfg types.Config, callbacks Callbacks, tran
 	}
 
 	return &Session{
-		ctx:       ctx,
-		llm:       llm,
-		clients:   clients,
-		fragment:  cogito.NewEmptyFragment(),
-		messages:  []openai.ChatCompletionMessage{},
-		callbacks: callbacks,
+		ctx:          ctx,
+		llm:          llm,
+		clients:      clients,
+		fragment:     cogito.NewEmptyFragment(),
+		messages:     []openai.ChatCompletionMessage{},
+		callbacks:    callbacks,
+		systemPrompt: cfg.GetPrompt(),
 	}, nil
 }
 
 // SendMessage sends a message to the assistant and processes the response
 func (s *Session) SendMessage(text string) (string, error) {
+	if s.systemPrompt != "" {
+		s.fragment = s.fragment.AddMessage("system", s.systemPrompt)
+	}
 	s.fragment = s.fragment.AddMessage("user", text)
 	s.messages = append(s.messages, openai.ChatCompletionMessage{
 		Role:    "user",
@@ -192,4 +197,3 @@ func (s *Session) Close() error {
 	}
 	return nil
 }
-

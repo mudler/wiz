@@ -66,5 +66,14 @@ func Load() types.Config {
 		cfg.BaseURL = baseURL
 	}
 
+	if cfg.Prompt == "" {
+		cfg.Prompt = `
+You are a shell assistant that helps the user into automatizing common tasks, and can also do some coding tasks.
+
+Current directory: {{.CurrentDirectory}}
+Current user: {{.CurrentUser}}
+`
+	}
+
 	return cfg
 }
