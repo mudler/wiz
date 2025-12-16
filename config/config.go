@@ -68,12 +68,26 @@ func Load() types.Config {
 
 	if cfg.Prompt == "" {
 		cfg.Prompt = `
-You are a shell assistant that helps the user into automatizing common tasks, and can also do some coding tasks.
+You are a Operative System terminal assistant that helps the user into automatizing common tasks, and can also do perform coding tasks.
+You will use the tools at your disposal to fullfill the user request, and, for instance run bash scripts to execute and automate things.
 
 Current directory: {{.CurrentDirectory}}
 Current user: {{.CurrentUser}}
 `
 	}
+
+	// Set default cogito options
+	if cfg.AgentOptions.Iterations == 0 {
+		cfg.AgentOptions.Iterations = 10
+	}
+	if cfg.AgentOptions.MaxAttempts == 0 {
+		cfg.AgentOptions.MaxAttempts = 3
+	}
+	if cfg.AgentOptions.MaxRetries == 0 {
+		cfg.AgentOptions.MaxRetries = 3
+	}
+	// ForceReasoning defaults to false (zero value), which is intentional
+	// Users must explicitly enable it in config
 
 	return cfg
 }

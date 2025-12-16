@@ -50,13 +50,14 @@ type Callbacks struct {
 
 // Session represents a chat session with the AI assistant
 type Session struct {
-	ctx          context.Context
-	llm          cogito.LLM
-	clients      []*mcp.ClientSession
-	fragment     cogito.Fragment
-	messages     []openai.ChatCompletionMessage
-	callbacks    Callbacks
-	systemPrompt string
+	ctx           context.Context
+	llm           cogito.LLM
+	clients       []*mcp.ClientSession
+	fragment      cogito.Fragment
+	messages      []openai.ChatCompletionMessage
+	callbacks     Callbacks
+	systemPrompt  string
+	cogitoOptions types.AgentOptions
 }
 
 // CommandTransport creates a new transport for a command
@@ -85,13 +86,14 @@ func NewSession(ctx context.Context, cfg types.Config, callbacks Callbacks, tran
 	}
 
 	return &Session{
-		ctx:          ctx,
-		llm:          llm,
-		clients:      clients,
-		fragment:     cogito.NewEmptyFragment(),
-		messages:     []openai.ChatCompletionMessage{},
-		callbacks:    callbacks,
-		systemPrompt: cfg.GetPrompt(),
+		ctx:           ctx,
+		llm:           llm,
+		clients:       clients,
+		fragment:      cogito.NewEmptyFragment(),
+		messages:      []openai.ChatCompletionMessage{},
+		callbacks:     callbacks,
+		systemPrompt:  cfg.GetPrompt(),
+		cogitoOptions: cfg.AgentOptions,
 	}, nil
 }
 
@@ -106,14 +108,12 @@ func (s *Session) SendMessage(text string) (string, error) {
 		Content: text,
 	})
 
-	var err error
-	s.fragment, err = cogito.ExecuteTools(
-		s.llm, s.fragment,
+	// Build cogito options from config
+	cogitoOpts := []cogito.Option{
 		cogito.WithContext(s.ctx),
-		cogito.WithIterations(10),
-		cogito.WithMaxAttempts(3),
-		cogito.WithMaxRetries(3),
-		cogito.WithForceReasoning(),
+		cogito.WithIterations(s.cogitoOptions.Iterations),
+		cogito.WithMaxAttempts(s.cogitoOptions.MaxAttempts),
+		cogito.WithMaxRetries(s.cogitoOptions.MaxRetries),
 		cogito.WithStatusCallback(func(status string) {
 			if s.callbacks.OnStatus != nil {
 				s.callbacks.OnStatus(status)
@@ -146,6 +146,17 @@ func (s *Session) SendMessage(text string) (string, error) {
 				Adjustment: resp.Adjustment,
 			}
 		}),
+	}
+
+	// Add ForceReasoning only if enabled in config
+	if s.cogitoOptions.ForceReasoning {
+		cogitoOpts = append(cogitoOpts, cogito.WithForceReasoning())
+	}
+
+	var err error
+	s.fragment, err = cogito.ExecuteTools(
+		s.llm, s.fragment,
+		cogitoOpts...,
 	)
 
 	if err != nil && !errors.Is(err, cogito.ErrNoToolSelected) {

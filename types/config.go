@@ -9,14 +9,23 @@ import (
 	"github.com/Masterminds/sprig/v3"
 )
 
+// AgentOptions holds configuration for the cogito ExecuteTools function
+type AgentOptions struct {
+	Iterations     int  `yaml:"iterations"`
+	MaxAttempts    int  `yaml:"max_attempts"`
+	MaxRetries     int  `yaml:"max_retries"`
+	ForceReasoning bool `yaml:"force_reasoning"`
+}
+
 // Config holds configuration for creating a new session
 type Config struct {
-	Model      string               `yaml:"model"`
-	APIKey     string               `yaml:"api_key"`
-	BaseURL    string               `yaml:"base_url"`
-	LogLevel   string               `yaml:"log_level"`
-	Prompt     string               `yaml:"prompt"`
-	MCPServers map[string]MCPServer `yaml:"mcp_servers"`
+	Model        string               `yaml:"model"`
+	APIKey       string               `yaml:"api_key"`
+	BaseURL      string               `yaml:"base_url"`
+	LogLevel     string               `yaml:"log_level"`
+	Prompt       string               `yaml:"prompt"`
+	MCPServers   map[string]MCPServer `yaml:"mcp_servers"`
+	AgentOptions AgentOptions         `yaml:"agent_options"`
 }
 
 func (c *Config) GetPrompt() string {
