@@ -259,7 +259,7 @@ main() {
     echo "  - Run 'wiz --height 40%' for TUI mode"
     echo ""
     echo "Configuration:"
-    echo "  Create a config file at ~/.config/wiz/config.yaml or ~/.wiz.yaml"
+    echo "  Create a config file at ~/.config/wiz/config.yaml, ~/.wiz.yaml or /etc/wiz/config.yaml"
     echo ""
     echo "Example config:"
     echo ""

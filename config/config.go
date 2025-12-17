@@ -33,6 +33,8 @@ func configPaths() []string {
 		paths = append(paths, filepath.Join(home, ".wiz.yaml"))
 	}
 
+	paths = append(paths, filepath.Join("/etc", "wiz", "config.yaml"))
+
 	return paths
 }
 

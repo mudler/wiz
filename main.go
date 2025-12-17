@@ -15,12 +15,9 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/mudler/cogito/pkg/xlog"
 	"github.com/mudler/wiz/config"
+	"github.com/mudler/wiz/internal"
 	"github.com/mudler/wiz/tui"
 	"github.com/mudler/wiz/types"
-)
-
-var (
-	version = "dev"
 )
 
 // commandTransport creates a new transport for a command
@@ -44,7 +41,7 @@ func main() {
 
 	// Handle version flag
 	if *versionFlag {
-		fmt.Printf("wiz %s\n", version)
+		fmt.Printf("wiz %s\n", internal.PrintableVersion())
 		os.Exit(0)
 	}
 
