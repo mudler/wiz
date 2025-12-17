@@ -26,5 +26,5 @@ dev-dist:
 dist:
 	$(GORELEASER) build --clean
 
-tests:
+test:
 	$(GO) test ./...
