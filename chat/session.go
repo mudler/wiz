@@ -100,6 +100,11 @@ func NewSession(ctx context.Context, cfg types.Config, callbacks Callbacks, tran
 	}, nil
 }
 
+func (s *Session) ClearHistory() {
+	s.messages = []openai.ChatCompletionMessage{}
+	s.fragment = cogito.NewEmptyFragment()
+}
+
 // SendMessage sends a message to the assistant and processes the response
 func (s *Session) SendMessage(text string) (string, error) {
 	if s.systemPrompt != "" {

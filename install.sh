@@ -55,10 +55,21 @@ error() {
 
 # Parse arguments
 SETUP_KEY_BINDINGS=true
+INSTALL_FROM_SOURCE=false
+WIZ_VERSION=latest
 while [[ $# -gt 0 ]]; do
     case $1 in
         --no-key-bindings)
             SETUP_KEY_BINDINGS=false
+            shift
+            ;;
+        --from-source)
+            INSTALL_FROM_SOURCE=true
+            shift
+            ;;
+        --version)
+            WIZ_VERSION=$2
+            shift
             shift
             ;;
         *)
@@ -136,6 +147,15 @@ detect_shell() {
     info "Detected shell: $CURRENT_SHELL"
 }
 
+install_from_release() {
+    info "Installing wiz from release..."
+    # get latest release number from GH
+    curl -fsSL https://github.com/mudler/wiz/releases/${WIZ_VERSION}/download/wiz-$(uname -s)-$(uname -m) -o wiz
+    chmod +x wiz
+    mv wiz "$INSTALL_DIR/"
+    success "Installed wiz to $INSTALL_DIR/wiz"
+}
+
 # Build from source
 build_from_source() {
     info "Building wiz from source..."
@@ -144,12 +164,20 @@ build_from_source() {
     if ! command -v go &> /dev/null; then
         error "Go is required to build from source. Please install Go first."
     fi
+
+    if ! command -v git &> /dev/null; then
+        error "Git is required to build from source. Please install Git first."
+    fi
     
     # Get the script directory
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     
     # Build
     cd "$SCRIPT_DIR"
+    if [ ! -e main.go ]; then
+        git clone https://github.com/mudler/wiz.git
+        cd wiz
+    fi
     go build -o wiz .
     
     # Install
@@ -239,7 +267,11 @@ main() {
     detect_shell
     
     # Build and install
-    build_from_source
+    if [ "$INSTALL_FROM_SOURCE" = "true" ]; then
+        build_from_source
+    else
+        install_from_release
+    fi
     
     # Update PATH
     update_path

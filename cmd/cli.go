@@ -1,4 +1,4 @@
-package main
+package cmd
 
 import (
 	"bufio"
@@ -99,7 +99,7 @@ func (s *spinner) stop() {
 	<-s.doneChan
 }
 
-func runner(ctx context.Context, cfg types.Config, transports ...mcp.Transport) error {
+func RunCLI(ctx context.Context, cfg types.Config, transports ...mcp.Transport) error {
 	reader := bufio.NewReader(os.Stdin)
 	spin := newSpinner()
 
@@ -172,23 +172,43 @@ func runner(ctx context.Context, cfg types.Config, transports ...mcp.Transport) 
 	fmt.Printf("%sCtrl+C to exit.%s\n\n", colorGray, colorReset)
 
 	for {
-		fmt.Printf("%s>%s ", colorCyan, colorReset)
-		text, err := reader.ReadString('\n')
-		if err != nil {
-			return err
-		}
-		text = strings.TrimSpace(text)
-		if text == "" {
-			continue
-		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			fmt.Printf("%s>%s ", colorCyan, colorReset)
 
-		fmt.Println()
-		spin.start("Casting spell...")
-		_, err = session.SendMessage(text)
-		spin.stop()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "%s✗ Error: %v%s\n", colorRed, err, colorReset)
+			text, err := reader.ReadString('\n')
+			if err != nil {
+				return err
+			}
+			text = strings.TrimSpace(text)
+			if text == "" {
+				continue
+			}
+
+			switch text {
+			case "clear":
+				session.ClearHistory()
+				continue
+			case "exit":
+				return nil
+			case "help":
+				fmt.Println("Available commands:")
+				fmt.Println("  exit - Exit the wizard")
+				fmt.Println("  help - Show this help message")
+				fmt.Println("  clear - Clear the conversation")
+				continue
+			}
+
+			fmt.Println()
+			spin.start("Casting spell...")
+			_, err = session.SendMessage(text)
+			spin.stop()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "%s✗ Error: %v%s\n", colorRed, err, colorReset)
+			}
+			fmt.Println()
 		}
-		fmt.Println()
 	}
 }

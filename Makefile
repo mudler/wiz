@@ -20,6 +20,9 @@ run-docker:
 	docker build -t wiz .
 	docker run -it -e LOG_LEVEL=$(LOG_LEVEL) -e MODEL=$(MODEL) -e API_KEY=$(API_KEY) -e BASE_URL=$(BASE_URL) --rm wiz
 
+install:
+	bash install.sh --from-source
+
 dev-dist:
 	$(GORELEASER) build --snapshot --clean
 

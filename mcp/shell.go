@@ -1,4 +1,4 @@
-package main
+package mcp
 
 import (
 	"bytes"
@@ -110,7 +110,7 @@ func executeCommand(ctx context.Context, req *mcp.CallToolRequest, input execute
 	return nil, output, nil
 }
 
-func runBashMCP(ctx context.Context, transport mcp.Transport) error {
+func startBashMCPServer(ctx context.Context, transport mcp.Transport) error {
 	// Create MCP server for shell command execution
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "shell",
