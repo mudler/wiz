@@ -21,6 +21,12 @@ Current user: {{.CurrentUser}}
 func configPaths() []string {
 	var paths []string
 
+	// current directory, .wiz.yaml
+	cwd, err := os.Getwd()
+	if err == nil {
+		paths = append(paths, filepath.Join(cwd, ".wiz.yaml"))
+	}
+
 	// First priority: XDG config directory
 	if xdgConfig := os.Getenv("XDG_CONFIG_HOME"); xdgConfig != "" {
 		paths = append(paths, filepath.Join(xdgConfig, "wiz", "config.yaml"))
