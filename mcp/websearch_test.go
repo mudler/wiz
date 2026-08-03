@@ -119,7 +119,7 @@ func TestSearchWebHandler(t *testing.T) {
 	ddgBaseURL = srv.URL + "/"
 	defer func() { ddgBaseURL = old }()
 
-	_, out, err := searchWeb(context.Background(), nil, webSearchInput{Query: "golang"})
+	_, out, err := (&webServer{classifier: allowClassifier{}}).search(context.Background(), nil, webSearchInput{Query: "golang"})
 	if err != nil {
 		t.Fatalf("searchWeb returned error: %v", err)
 	}
@@ -132,10 +132,13 @@ func TestSearchWebHandler(t *testing.T) {
 	if out.Results[0].URL != "https://go.dev/" {
 		t.Errorf("first url = %q", out.Results[0].URL)
 	}
+	if out.Results[0].SourceID == "" {
+		t.Error("expected provenance source id")
+	}
 }
 
 func TestSearchWebEmptyQuery(t *testing.T) {
-	_, out, err := searchWeb(context.Background(), nil, webSearchInput{Query: "   "})
+	_, out, err := (&webServer{classifier: allowClassifier{}}).search(context.Background(), nil, webSearchInput{Query: "   "})
 	if err != nil {
 		t.Fatalf("unexpected go error: %v", err)
 	}
@@ -157,7 +160,7 @@ func TestSearchWebNon200(t *testing.T) {
 	ddgBaseURL = srv.URL + "/"
 	defer func() { ddgBaseURL = old }()
 
-	_, out, err := searchWeb(context.Background(), nil, webSearchInput{Query: "golang"})
+	_, out, err := (&webServer{classifier: allowClassifier{}}).search(context.Background(), nil, webSearchInput{Query: "golang"})
 	if err != nil {
 		t.Fatalf("unexpected go error: %v", err)
 	}

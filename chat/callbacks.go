@@ -50,6 +50,10 @@ type ToolCallRequest struct {
 	Arguments string
 	Reasoning string
 	AgentID   string // non-empty when the requesting caller is a sub-agent
+	// ExternalSources identifies untrusted data still present in the active
+	// conversation. A non-empty value forces consequential calls through the
+	// approval gate even when the normal policy would auto-approve them.
+	ExternalSources []string
 }
 
 // ToolResult is the outcome of a tool execution, surfaced to the UI after the
@@ -123,7 +127,7 @@ type Callbacks struct {
 	// for the turn's final reply (that arrives via OnResponse). Optional.
 	OnStepContent func(content string)
 	OnResponse    func(response string)
-	OnError     func(err error)
+	OnError       func(err error)
 	// OnToolResult is called after a tool finishes, with its output. Optional.
 	OnToolResult func(res ToolResult)
 	// OnAgentEvent is called on sub-agent lifecycle changes. Optional.

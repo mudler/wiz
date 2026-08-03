@@ -10,7 +10,7 @@ import (
 // TestSearchWebLive hits the real DuckDuckGo endpoint to catch markup drift.
 // Run with: go test -tags integration ./mcp/ -run TestSearchWebLive
 func TestSearchWebLive(t *testing.T) {
-	_, out, err := searchWeb(context.Background(), nil, webSearchInput{Query: "golang programming language", MaxResults: 5})
+	_, out, err := (&webServer{classifier: allowClassifier{}}).search(context.Background(), nil, webSearchInput{Query: "golang programming language", MaxResults: 5})
 	if err != nil {
 		t.Fatalf("searchWeb: %v", err)
 	}

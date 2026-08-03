@@ -415,7 +415,7 @@ func runCtx(ctx context.Context, o Options) int {
 	// An embedder that resolves the model itself owns that decision, so neither
 	// the abort nor the wizard applies: cfg is used as loaded.
 	if !o.SkipSetup {
-		switch decideSetup(cfg.Model != "", *setupFlag, isTTY) {
+		switch decideSetup(cfg.ResolvedMainModel().Model != "", *setupFlag, isTTY) {
 		case setupAbort:
 			if *setupFlag {
 				fmt.Fprintf(o.stderr(), "%s --setup requires an interactive terminal\n", o.name())
