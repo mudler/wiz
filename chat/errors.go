@@ -62,6 +62,24 @@ func humanizeError(err error) error {
 	return err
 }
 
+// humanizeTurnError is humanizeError plus the one fact only the turn knows:
+// whether nib already compacted the conversation and re-sent it. An overflow
+// that survives that must not advise the user to clear the conversation, which
+// is the thing nib just did on their behalf.
+//
+// A second message rather than a flag threaded through contextOverflowMessage:
+// the two texts differ in their subject as well as their advice ("is larger"
+// versus "is STILL larger"), the first is reached from humanizeError on every
+// non-turn path, and the shared half is already factored into overflowDetail.
+// A bool parameter would leave one function whose every caller passes a
+// constant, and both branches would still have to be tested separately.
+func humanizeTurnError(err error, compacted bool) error {
+	if compacted && isContextOverflow(err) {
+		return &FriendlyError{err: err, msg: contextOverflowRetriedMessage(err.Error())}
+	}
+	return humanizeError(err)
+}
+
 // isContextOverflow reports whether err is a backend complaining that the
 // request did not fit the model's context window. Factored out of
 // humanizeError so the recovery path and the message path cannot drift apart
@@ -135,20 +153,43 @@ func windowFromMessage(msg string) (int, bool) {
 	return a, true
 }
 
-// contextOverflowMessage builds the user-facing text for a context-window
-// overflow, folding in the token counts when the backend reported them. The
-// larger count is the request size and the smaller is the model's limit,
-// regardless of the order the backend printed them.
-func contextOverflowMessage(raw string) string {
-	detail := ""
-	if m := tokenCountRe.FindAllStringSubmatch(raw, -1); len(m) >= 2 {
-		needs, _ := strconv.Atoi(m[0][1])
-		allows, _ := strconv.Atoi(m[1][1])
-		if allows > needs {
-			needs, allows = allows, needs
-		}
-		detail = fmt.Sprintf(" (needs ~%d tokens, model allows %d)", needs, allows)
+// overflowDetail renders the parenthesised token figures for an overflow
+// message, or "" when the backend did not report two of them. The larger count
+// is the request size and the smaller is the model's limit, regardless of the
+// order the backend printed them — the same rule learnedWindowFrom applies.
+func overflowDetail(raw string) string {
+	m := tokenCountRe.FindAllStringSubmatch(raw, -1)
+	if len(m) < 2 {
+		return ""
 	}
-	return "the request is larger than the model's context window" + detail +
+	needs, _ := strconv.Atoi(m[0][1])
+	allows, _ := strconv.Atoi(m[1][1])
+	if allows > needs {
+		needs, allows = allows, needs
+	}
+	return fmt.Sprintf(" (needs ~%d tokens, model allows %d)", needs, allows)
+}
+
+// contextOverflowMessage builds the user-facing text for the FIRST context-
+// window overflow of a turn, folding in the token counts when the backend
+// reported them. Clearing the conversation is sound advice here: nothing has
+// been done about the size yet.
+func contextOverflowMessage(raw string) string {
+	return "the request is larger than the model's context window" + overflowDetail(raw) +
 		". Increase the backend's context size, or reduce the enabled tools/MCP servers and clear the conversation (\"clear\"), then retry."
+}
+
+// contextOverflowRetriedMessage is the same overflow reported after nib already
+// compacted the conversation and re-sent the turn, and it still did not fit.
+//
+// It says so, and it drops the "clear the conversation, then retry" advice the
+// first message gives. That advice is actively wrong here: compaction just
+// replaced the old turns with a summary and the retry already happened, so a
+// user who followed it would spend their history discovering that nib had
+// beaten them to it. What is left over is the request's fixed floor — the
+// system prompt and the tool schemas — which only a bigger window or fewer
+// tools can move.
+func contextOverflowRetriedMessage(raw string) string {
+	return "the request is still larger than the model's context window" + overflowDetail(raw) +
+		" after compacting the conversation and retrying. Compacting again will not help: increase the backend's context size, or reduce the enabled tools/MCP servers."
 }

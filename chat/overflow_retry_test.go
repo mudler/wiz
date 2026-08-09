@@ -163,6 +163,50 @@ func TestOverflowRetriesAtMostOnce(t *testing.T) {
 	}
 }
 
+// The same commitment as TestHumanizeTurnErrorAfterCompaction, but through
+// SendMessage: the message a real turn surfaces depends on whether the recovery
+// actually ran, and only the turn knows that.
+func TestOverflowErrorReflectsWhetherCompactionWasTried(t *testing.T) {
+	t.Run("after a failed retry", func(t *testing.T) {
+		s := newOverflowSession(t, &overflowLLM{failures: 99})
+
+		_, err := s.SendMessage("what changed?")
+		if err == nil {
+			t.Fatal("expected the turn to fail when compaction cannot help")
+		}
+		if s.overflowRetries() != 1 {
+			t.Fatalf("overflow retries = %d, want 1: this test is not exercising a retry at all", s.overflowRetries())
+		}
+		if strings.Contains(err.Error(), "clear the conversation") {
+			t.Fatalf("the user is advised to do the thing nib just did: %q", err)
+		}
+		if !strings.Contains(err.Error(), "compacting the conversation and retrying") {
+			t.Fatalf("the error does not say compaction was already attempted: %q", err)
+		}
+	})
+
+	t.Run("no retry was made", func(t *testing.T) {
+		// Compaction's own call overflows, so the recovery bails before
+		// retrying. Nothing has been done about the size, so the original
+		// advice is still the right advice.
+		s := newOverflowSession(t, &summaryFailingLLM{overflowLLM: overflowLLM{failures: 99}})
+
+		_, err := s.SendMessage("what changed?")
+		if err == nil {
+			t.Fatal("expected the turn to fail")
+		}
+		if s.overflowRetries() != 0 {
+			t.Fatalf("overflow retries = %d, want 0: this subtest is not exercising the no-retry path", s.overflowRetries())
+		}
+		if !strings.Contains(err.Error(), "clear the conversation") {
+			t.Fatalf("a first overflow lost advice that is still correct: %q", err)
+		}
+		if strings.Contains(err.Error(), "compacting the conversation and retrying") {
+			t.Fatalf("the error claims a retry that never happened: %q", err)
+		}
+	})
+}
+
 // billedOverflowLLM models the shape a failed run really has: a call the
 // backend served and billed, then the overflow.
 //

@@ -1293,7 +1293,13 @@ func (s *Session) SendMessage(text string, parts ...ContentPart) (string, error)
 				}
 			}
 
-			err = humanizeError(err)
+			// Reached only when no retry is happening: either this turn never
+			// qualified for one, or it already spent its single recovery and
+			// overflowed again. In that second case the message must not advise
+			// clearing the conversation, because compaction just did the
+			// equivalent and the retry has already been made — see
+			// contextOverflowRetriedMessage.
+			err = humanizeTurnError(err, s.overflowRetries() > 0)
 			if s.callbacks.OnError != nil {
 				s.callbacks.OnError(err)
 			}
