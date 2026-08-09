@@ -125,6 +125,35 @@ func (s *Session) contextWindow() int {
 	return s.compaction.MaxContextTokens
 }
 
+// canRecoverFromOverflow reports whether a failed run's error is one nib may
+// act on: a context overflow the user did not cancel.
+//
+// The cancellation half is not redundant with isContextOverflow. Today cogito's
+// retry loop calls backoffOrCancel after every failed attempt and returns
+// ctx.Err() when the context is done, so an interrupt that lands during the
+// request reaches here as "context canceled" and fails the overflow check
+// anyway. That is cogito's mapping, not nib's guarantee: returning the last
+// real error instead would be a perfectly reasonable change, and cancellation
+// can also land in the window between ExecuteTools returning an overflow and
+// this check running. A cancelled turn means the user pressed Ctrl+C, and
+// re-sending the turn is the opposite of what they asked for — so the rule is
+// stated here rather than inferred from another package's error mapping.
+//
+// It is a free function rather than a method because it reads no session state:
+// that keeps the boundary testable without a live turn, which is the only way
+// the interrupt case can be exercised at all (see the note above).
+func canRecoverFromOverflow(turnCtx context.Context, err error) bool {
+	return turnCtx.Err() == nil && isContextOverflow(err)
+}
+
+// overflowRetries reports how many context-overflow recoveries the current turn
+// performed. Read by tests; the cap itself is enforced in SendMessage.
+func (s *Session) overflowRetries() int {
+	s.overflowMu.Lock()
+	defer s.overflowMu.Unlock()
+	return s.overflowRetried
+}
+
 // contextBudget is the window minus the reserve held back for the response,
 // where the reserve is never allowed to claim more than a quarter of the
 // window.

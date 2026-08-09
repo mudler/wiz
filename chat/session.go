@@ -167,6 +167,13 @@ type Session struct {
 	// just as un-stubbing it would.
 	prunedIDs map[string]string
 
+	// overflowRetried counts context-overflow recoveries in the CURRENT turn.
+	// It exists so a retry can never become a loop, and so tests can assert on
+	// attempts rather than on a raw completion-call count that cogito's own
+	// internal retries make unstable.
+	overflowMu      sync.Mutex
+	overflowRetried int
+
 	tracer *trace.Recorder // non-nil when session tracing is enabled
 
 	// traceDir is where usage.json is written on Close. Empty = tracing off, so
@@ -997,6 +1004,11 @@ func (s *Session) SendMessage(text string, parts ...ContentPart) (string, error)
 	turnCtx := s.beginTurn()
 	s.applyPendingReload()
 	s.allowAllTurn = false
+	// The overflow retry is capped per TURN, not per session: a later turn that
+	// overflows deserves its own recovery attempt.
+	s.overflowMu.Lock()
+	s.overflowRetried = 0
+	s.overflowMu.Unlock()
 	defer s.endTurn()
 
 	// Mark the run live so Inject can target it; clear on return. Drain the
@@ -1221,6 +1233,51 @@ func (s *Session) SendMessage(text string, parts ...ContentPart) (string, error)
 			// which is the point of keeping them separate counters.
 			if newFragment.Status != nil {
 				s.addUsage(newFragment.Status.CumulativeUsage)
+			}
+
+			// Context-overflow recovery. The backend has just told us the
+			// model's real window — the one moment it does so reliably — so
+			// keep it, then compact and try the turn again.
+			//
+			// Exactly once. If the overflow comes from the system prompt plus
+			// tool schemas alone, or from a tail splitForCompaction must keep
+			// intact, the second attempt fails identically and a loop would
+			// re-summarise into the same wall, burning tokens every pass.
+			//
+			// Never after an interrupt: a cancelled turnCtx means the user
+			// pressed Ctrl+C, and re-sending is the opposite of what they asked
+			// for. See canRecoverFromOverflow.
+			if canRecoverFromOverflow(turnCtx, err) {
+				if w, ok := learnedWindowFrom(err); ok {
+					s.rememberWindow(w, mainModel)
+				}
+				s.overflowMu.Lock()
+				first := s.overflowRetried == 0
+				s.overflowMu.Unlock()
+
+				if first {
+					if s.callbacks.OnStatus != nil {
+						s.callbacks.OnStatus("Context window exceeded — compacting and retrying…")
+					}
+					cb, ca, cerr := s.compactHistory(turnCtx)
+					switch {
+					case cerr != nil:
+						// Report the ORIGINAL overflow, not the summariser's
+						// failure: the first is the one the user can act on.
+						xlog.Warn("overflow recovery: compaction failed", "error", cerr)
+					case cb == ca:
+						// Nothing to summarise, so a retry would send a
+						// byte-identical request.
+					default:
+						s.overflowMu.Lock()
+						s.overflowRetried++
+						s.overflowMu.Unlock()
+						if s.callbacks.OnCompactDone != nil {
+							s.callbacks.OnCompactDone(cb, ca)
+						}
+						continue
+					}
+				}
 			}
 
 			err = humanizeError(err)
