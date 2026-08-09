@@ -1041,15 +1041,9 @@ func (s *Session) SendMessage(text string, parts ...ContentPart) (string, error)
 			}
 		}
 	}()
+	s.ensureSystemPrompt()
+
 	s.historyMu.Lock()
-	// Add the system prompt to the persistent fragment only if it is not already
-	// there. s.fragment persists across turns, so re-adding it every turn would
-	// accumulate N identical system messages; cogito merges those into a
-	// position-0 block that grows each turn and defeats the server's prompt-prefix
-	// KV cache (full re-prefill every message). Add it once.
-	if s.systemPrompt != "" && !fragmentHasSystemContent(s.fragment, s.systemPrompt) {
-		s.fragment = s.fragment.AddMessage("system", s.systemPrompt)
-	}
 	s.fragment = buildUserFragment(s.fragment, text, parts)
 	s.messages = append(s.messages, openai.ChatCompletionMessage{
 		Role:    "user",
@@ -1269,6 +1263,16 @@ func (s *Session) SendMessage(text string, parts ...ContentPart) (string, error)
 						s.overflowMu.Lock()
 						s.overflowRetried++
 						s.overflowMu.Unlock()
+						// compactHistory rebuilt the fragment as [summary] +
+						// tail, and renderMessages skips system content, so the
+						// system prompt was dropped without even being
+						// represented in the summary. SendMessage's own guard
+						// sits ABOVE this loop, so the `continue` below would
+						// re-send the turn with no identity, no working
+						// directory, no skills index and none of the tool
+						// guidance. Re-apply the same guard here: it is a
+						// no-op whenever the prompt survived in the kept tail.
+						s.ensureSystemPrompt()
 						// Announced here, AFTER compaction, and only on the
 						// branch that reaches the `continue` below. The status
 						// promises a retry, and the two branches above are the
@@ -1665,6 +1669,37 @@ func (s *Session) Close() error {
 		firstErr = err
 	}
 	return firstErr
+}
+
+// ensureSystemPrompt adds the system prompt to the persistent fragment only if
+// it is not already there. s.fragment persists across turns, so re-adding it
+// every turn would accumulate N identical system messages; cogito merges those
+// into a position-0 block that grows each turn and defeats the server's
+// prompt-prefix KV cache (full re-prefill every message). Add it once.
+//
+// It is a method rather than four inline lines because there are now TWO places
+// that must hold this invariant, and only one of them is obvious. SendMessage
+// calls it once per turn, above the goal loop. compactHistory REPLACES the
+// fragment with [summary] + tail — and renderMessages skips system content, so
+// the prompt is neither kept nor summarised — which means the overflow
+// recovery's `continue` re-enters the loop with the identity, working
+// directory, skills index and tool guidance all gone, silently, on the one path
+// whose whole purpose is to complete the turn. Any future caller that rebuilds
+// the fragment mid-turn has the same duty; giving the rule a name is what makes
+// it possible to discharge.
+//
+// Appending is enough even though the prompt belongs at position 0: cogito's
+// normalizeSystemMessages hoists every system message into a single deduped
+// block at the front before the request goes out.
+func (s *Session) ensureSystemPrompt() {
+	if s.systemPrompt == "" {
+		return
+	}
+	s.historyMu.Lock()
+	defer s.historyMu.Unlock()
+	if !fragmentHasSystemContent(s.fragment, s.systemPrompt) {
+		s.fragment = s.fragment.AddMessage("system", s.systemPrompt)
+	}
 }
 
 // fragmentHasSystemContent reports whether the fragment already carries a system
