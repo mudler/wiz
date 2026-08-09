@@ -14,12 +14,49 @@ func TestContextBudgetSubtractsTheReserve(t *testing.T) {
 	}
 }
 
-// A window at or below the reserve would otherwise produce a zero or negative
-// budget and fire compaction on every single turn.
+// The floor exists for a window that is itself absent or nonsensical. With the
+// reserve clamped to a quarter of the window, a positive window always keeps a
+// positive budget, so this is the only way to reach zero.
 func TestContextBudgetFloorsAtZero(t *testing.T) {
 	cfg := types.CompactionConfig{ReserveTokens: 4096}
-	if got := contextBudget(cfg, 1000); got != 0 {
-		t.Fatalf("budget = %d, want 0", got)
+	for _, window := range []int{0, -1, -100000} {
+		if got := contextBudget(cfg, window); got != 0 {
+			t.Fatalf("budget(%d) = %d, want 0", window, got)
+		}
+	}
+}
+
+// Above 4×ReserveTokens the clamp does nothing at all: the reserve is the flat
+// configured count, exactly as the spec chose. A reply does not get longer
+// because the window did.
+func TestContextBudgetKeepsTheFlatReserveOnALargeWindow(t *testing.T) {
+	cfg := types.CompactionConfig{ReserveTokens: 4096}
+	// 16384 is the boundary: window/4 == ReserveTokens, flat still applies.
+	for _, tc := range []struct{ window, want int }{
+		{16384, 12288},   // 16384 - 4096
+		{128000, 123904}, // 128000 - 4096
+		{262144, 258048}, // 262144 - 4096
+	} {
+		if got := contextBudget(cfg, tc.window); got != tc.want {
+			t.Fatalf("budget(%d) = %d, want %d: the flat reserve must apply unchanged here", tc.window, got, tc.want)
+		}
+	}
+}
+
+// Below the boundary the flat reserve is incoherent — at 4096 it would claim
+// the entire window — so it is clamped to a quarter and compaction keeps
+// working. This is not the percentage reserve the spec rejected: it applies
+// only here, and the trigger is still Threshold × budget.
+func TestContextBudgetClampsTheReserveOnASmallWindow(t *testing.T) {
+	cfg := types.CompactionConfig{ReserveTokens: 4096}
+	for _, tc := range []struct{ window, want int }{
+		{4096, 3072},   // reserve clamped 4096 → 1024
+		{2048, 1536},   // reserve clamped 4096 → 512
+		{16383, 12288}, // just under the boundary: reserve clamped to 4095
+	} {
+		if got := contextBudget(cfg, tc.window); got != tc.want {
+			t.Fatalf("budget(%d) = %d, want %d", tc.window, got, tc.want)
+		}
 	}
 }
 
@@ -36,12 +73,52 @@ func TestReportersConfigurationNowTriggersBeforeTheLimit(t *testing.T) {
 	}
 }
 
-// A window that leaves no budget at all (the whole window is reserved) must not
-// make compaction fire on every turn. Compaction stays off instead.
-func TestShouldAutoCompactIsOffWhenTheReserveEatsTheWholeWindow(t *testing.T) {
+// A small model must keep its auto-compaction. An unclamped flat reserve would
+// take the whole 4096-token window, leave a budget of 0, and switch compaction
+// OFF for the model that overflows soonest — and once windows are learned from
+// overflow errors, LEARNING a real 4096 window would be the thing that disabled
+// compaction for the model that had just overflowed.
+func TestShouldAutoCompactStillFiresOnASmallWindow(t *testing.T) {
 	cfg := types.CompactionConfig{Threshold: 0.8, ReserveTokens: 4096}
-	if shouldAutoCompact(cfg, 4096, 999999) {
-		t.Fatal("a zero budget must disable auto-compaction, not fire it every turn")
+	// budget 3072, trigger at int(3072*0.8) = 2457.
+	if shouldAutoCompact(cfg, 4096, 2456) {
+		t.Fatal("fired below the trigger")
+	}
+	if !shouldAutoCompact(cfg, 4096, 2457) {
+		t.Fatal("a 4096-token model got no auto-compaction at all")
+	}
+	if shouldAutoCompact(cfg, 4096, 100) {
+		t.Fatal("an early turn must not compact: the clamp is not a licence to fire every turn")
+	}
+}
+
+// The flat reserve is untouched on a real window: the boundary between the two
+// regimes is 4×ReserveTokens, and the large side must behave exactly as it did
+// before the clamp existed.
+func TestShouldAutoCompactUsesTheFlatReserveOnALargeWindow(t *testing.T) {
+	cfg := types.CompactionConfig{Threshold: 0.8, ReserveTokens: 4096}
+	// budget 123904, trigger at int(123904*0.8) = 99123.
+	if shouldAutoCompact(cfg, 128000, 99122) {
+		t.Fatal("fired below the trigger")
+	}
+	if !shouldAutoCompact(cfg, 128000, 99123) {
+		t.Fatal("did not fire above the trigger")
+	}
+}
+
+// Auto-compaction is off when there is no window at all: nothing was learned
+// and MaxContextTokens is 0. This property used to live in
+// compact_internal_test.go against cfg.MaxContextTokens directly; it moved here
+// with contextWindow, which is now the only thing that reads that field.
+func TestNoWindowAtAllDisablesAutoCompaction(t *testing.T) {
+	s := &Session{llmModel: "qwen"}
+	s.compaction = types.CompactionConfig{MaxContextTokens: 0, Threshold: 0.8, ReserveTokens: 4096}
+
+	if got := s.contextWindow(); got != 0 {
+		t.Fatalf("contextWindow = %d, want 0", got)
+	}
+	if shouldAutoCompact(s.compaction, s.contextWindow(), 999999) {
+		t.Fatal("MaxContextTokens=0 with nothing learned must never trigger")
 	}
 }
 
@@ -58,8 +135,9 @@ func TestRememberedWindowIsUsedForTheSameModel(t *testing.T) {
 
 // The learned window is a fact about ONE model. Carrying a 262k window into a
 // session that switched to an 8k model would suppress compaction exactly when
-// it is most needed — and Reload can change the model just as SwitchModel can,
-// which is why the rule is keyed on the name rather than on the method.
+// it is most needed. Comparing model names rather than hooking the one method
+// that switches models today is what keeps that true for any future path that
+// changes the model, without anyone having to remember to clear the field.
 func TestRememberedWindowIsIgnoredAfterTheModelChanges(t *testing.T) {
 	s := &Session{llmModel: "qwen"}
 	s.compaction = types.CompactionConfig{MaxContextTokens: 128000}

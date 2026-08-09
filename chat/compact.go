@@ -44,9 +44,8 @@ func splitForCompaction(msgs []openai.ChatCompletionMessage, keepRecent int) (he
 
 // shouldAutoCompact reports whether the last request's prompt tokens crossed the
 // configured fraction of the BUDGET — the window minus the reserve. Auto-
-// compaction is off when Disabled, when no window is available, or when the
-// reserve leaves no budget at all (firing on every turn would be worse than
-// not firing).
+// compaction is off when Disabled or when no window is available (configured or
+// learned).
 //
 // The window is passed in rather than read from cfg because it may have been
 // learned from the backend, which is more trustworthy than any configured
@@ -56,6 +55,11 @@ func shouldAutoCompact(cfg types.CompactionConfig, window, promptTokens int) boo
 		return false
 	}
 	budget := contextBudget(cfg, window)
+	// Defensive only: contextBudget clamps the reserve to a quarter of the
+	// window, so a positive window always has a positive budget and the
+	// check above already rejected the rest. It stays because a zero budget
+	// would make the trigger fire on every single turn, which is the one
+	// outcome worse than never firing.
 	if budget <= 0 {
 		return false
 	}
@@ -102,10 +106,14 @@ func (s *Session) rememberWindow(window int, model string) {
 // when it belongs to the model currently in use, otherwise the configured
 // MaxContextTokens.
 //
-// Keyed on the model NAME rather than on which method last changed the model:
-// Reload re-reads config and can change cfg.Model exactly as SwitchModel does,
-// so a rule written in terms of SwitchModel would carry a 262k window into an
-// 8k model and suppress compaction precisely when it is most needed.
+// Keyed on the model NAME rather than on whichever method changed the model.
+// A window learned from one backend's overflow error is a fact about ONE
+// model, so it is meaningless except read as a pair with llmModel: carrying a
+// 262k window into an 8k model would suppress compaction precisely when it is
+// most needed. Comparing the names makes that safe for every path that can
+// change the model, present or future, without anyone having to remember to
+// clear the field from it. (Today only NewSession and SetModel assign
+// llmModel; Reload does not.)
 func (s *Session) contextWindow() int {
 	s.modelMu.RLock()
 	learned, forModel, current := s.learnedWindow, s.learnedWindowModel, s.llmModel
@@ -117,9 +125,23 @@ func (s *Session) contextWindow() int {
 	return s.compaction.MaxContextTokens
 }
 
-// contextBudget is the window minus the reserve held back for the response.
+// contextBudget is the window minus the reserve held back for the response,
+// where the reserve is never allowed to claim more than a quarter of the
+// window.
+//
+// The clamp is not the percentage reserve the spec rejected. The reserve stays
+// a flat cfg.ReserveTokens for every window of 4×ReserveTokens or more — 16384
+// and up at the 4096 default — and the trigger is still Threshold × budget, not
+// a percentage of the window. The clamp bites only where the flat number is
+// incoherent relative to the window it is being subtracted from: without it a
+// 4096-token model reserves its entire window, the budget is 0, and auto-
+// compaction switches OFF for the model that overflows soonest. Worse, once a
+// window is learned from an overflow error, LEARNING a real 4096 window would
+// be what disabled compaction for the model that just overflowed — the exact
+// inverse of the point of learning it.
 func contextBudget(cfg types.CompactionConfig, window int) int {
-	b := window - cfg.ReserveTokens
+	reserve := min(cfg.ReserveTokens, window/4)
+	b := window - reserve
 	if b < 0 {
 		return 0
 	}

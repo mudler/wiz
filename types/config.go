@@ -41,6 +41,11 @@ type CompactionConfig struct {
 	// A fixed count rather than a fraction on purpose: a reply does not get
 	// longer because the window did, so a percentage over-reserves badly at
 	// large windows and under-reserves at small ones. 0 → default 4096.
+	//
+	// It is capped at a quarter of the window in use, so that a flat count
+	// larger than the window itself cannot reserve all of it and leave
+	// compaction with nothing to trigger on (see chat.contextBudget). At the
+	// 4096 default the cap applies only below a 16384-token window.
 	ReserveTokens int `yaml:"reserve_tokens"`
 }
 
