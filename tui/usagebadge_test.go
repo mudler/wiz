@@ -120,6 +120,34 @@ func TestContextBadgeSubtractsTheReserve(t *testing.T) {
 	}
 }
 
+// With compaction disabled there is no moment for the badge to predict, so it
+// must not highlight — the highlight is a warning about something that is about
+// to happen, and with Disabled set nothing is. The percentage still shows: it is
+// real headroom against a real budget.
+func TestContextBadgeDoesNotWarnWhenCompactionIsDisabled(t *testing.T) {
+	// Identical to TestContextBadgeSubtractsTheReserve's numbers — 80% of the
+	// budget, which is exactly the trigger — so the only difference is Disabled.
+	base := types.CompactionConfig{
+		MaxContextTokens: 128000, Threshold: 0.8, ReserveTokens: 4096,
+	}
+
+	on := Model{width: 120, contextTokens: 100000}
+	on.cfg.Compaction = base
+	if !on.contextBadgeWarns(100000, on.contextBudget()) {
+		t.Fatal("the badge does not warn with compaction ON at the trigger; this test is not comparing against a warning at all")
+	}
+
+	base.Disabled = true
+	off := Model{width: 120, contextTokens: 100000}
+	off.cfg.Compaction = base
+	if off.contextBadgeWarns(100000, off.contextBudget()) {
+		t.Fatal("the badge warns at 80% while compaction is disabled, predicting a compaction that cannot fire")
+	}
+	if got := off.contextBadge(); !strings.Contains(got, "(80%)") {
+		t.Fatalf("contextBadge = %q, want the percentage still shown", got)
+	}
+}
+
 // overflowingOpenAI always answers with the llama.cpp-shaped 400 that states the
 // model's real window, so a session driven through it learns 262144 whatever it
 // was configured with.

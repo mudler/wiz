@@ -2021,7 +2021,9 @@ var ctxBadgeWarn = lipgloss.NewStyle().Foreground(theme.Accent)
 // contextBudget is the number the badge measures against: the window the
 // session is really using, less the reserve held back for the response. It is
 // what chat.shouldAutoCompact takes its threshold of, so a badge drawn against
-// it reaches 100% exactly where compaction fires.
+// it reaches 100% exactly where compaction fires — when compaction is on at
+// all. With Compaction.Disabled the scale is still honest headroom, and
+// contextBadgeWarns is what withholds the prediction.
 //
 // Both halves used to be wrong. The raw cfg.Compaction.MaxContextTokens ignores
 // the reserve (a few percent at 128k) and, worse, ignores a window learned from
@@ -2037,9 +2039,33 @@ func (m Model) contextBudget() int {
 	return chat.ContextBudget(m.cfg.Compaction, window)
 }
 
+// contextBadgeWarns reports whether the badge should highlight: usage has
+// reached the fraction of the budget auto-compaction triggers on, AND
+// compaction can actually fire.
+//
+// The Disabled half is the part that is easy to forget. The highlight is a
+// warning that something is about to happen; with compaction off nothing is,
+// and lighting the badge at 80% predicts a compaction that cannot come. It
+// mirrors chat.shouldAutoCompact, which rejects Disabled first for the same
+// reason, and the default threshold is the same 0.8 that function applies.
+//
+// Split out of contextBadge because it is the only part of the badge a test can
+// assert on: lipgloss renders both styles as plain text when tests run without
+// a TTY, so a rendered badge cannot say whether it was highlighted.
+func (m Model) contextBadgeWarns(used, budget int) bool {
+	if m.cfg.Compaction.Disabled {
+		return false
+	}
+	threshold := m.cfg.Compaction.Threshold
+	if threshold <= 0 || threshold > 1 {
+		threshold = 0.8
+	}
+	return float64(used) >= float64(budget)*threshold
+}
+
 // contextBadge renders the right-aligned context-size indicator for the bottom
 // bar, e.g. "ctx 8k (6%)". It highlights once usage reaches the auto-compaction
-// threshold. Returns "" when there's nothing to show yet.
+// threshold and compaction is on. Returns "" when there's nothing to show yet.
 func (m Model) contextBadge() string {
 	used := m.contextTokens
 	if used <= 0 {
@@ -2047,16 +2073,14 @@ func (m Model) contextBadge() string {
 	}
 	budget := m.contextBudget()
 	if budget <= 0 {
-		// No window at all (auto-compaction off): show the bare size.
+		// No window at all: show the bare size.
 		return theme.Meta.Render("ctx " + chat.HumanTokens(used))
 	}
 	pct := used * 100 / budget
+	// The percentage is shown even with compaction disabled: it is real headroom
+	// against a real budget. Only the highlight is withheld.
 	label := fmt.Sprintf("ctx %s (%d%%)", chat.HumanTokens(used), pct)
-	threshold := m.cfg.Compaction.Threshold
-	if threshold <= 0 || threshold > 1 {
-		threshold = 0.8
-	}
-	if float64(used) >= float64(budget)*threshold {
+	if m.contextBadgeWarns(used, budget) {
 		return ctxBadgeWarn.Render(label)
 	}
 	return theme.Meta.Render(label)
