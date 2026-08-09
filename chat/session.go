@@ -106,16 +106,24 @@ type Session struct {
 	// turn on one client from start to finish while the switch applies from the
 	// next one. The rest of the endpoint state below (apiKey, baseURL,
 	// metadata, reasoningEffort) is fixed at construction and read lock-free.
-	modelMu         sync.RWMutex
-	llmModel        string // guarded by modelMu
-	apiKey          string
-	baseURL         string
-	transcribeModel string
-	visionModel     string
-	videoModel      string
-	workingDir      string
-	metadata        map[string]string // global per-request metadata; merged with per-agent overrides
-	reasoningEffort string            // OpenAI reasoning_effort sent on every request (e.g. "none")
+	modelMu  sync.RWMutex
+	llmModel string // guarded by modelMu
+
+	// learnedWindow is the context window a backend stated in an overflow
+	// error, and learnedWindowModel is the model it was learned for. They are
+	// guarded by modelMu because they are only ever meaningful as a pair with
+	// llmModel, and reading them under a different lock would let a model
+	// switch land between the two reads.
+	learnedWindow      int
+	learnedWindowModel string
+	apiKey             string
+	baseURL            string
+	transcribeModel    string
+	visionModel        string
+	videoModel         string
+	workingDir         string
+	metadata           map[string]string // global per-request metadata; merged with per-agent overrides
+	reasoningEffort    string            // OpenAI reasoning_effort sent on every request (e.g. "none")
 
 	configurator  *manage.Configurator
 	reloadMu      sync.Mutex
@@ -1301,7 +1309,7 @@ func (s *Session) SendMessage(text string, parts ...ContentPart) (string, error)
 	if s.fragment.Status != nil {
 		promptTokens = s.fragment.Status.LastUsage.PromptTokens
 	}
-	if shouldAutoCompact(s.compaction, promptTokens) {
+	if shouldAutoCompact(s.compaction, s.contextWindow(), promptTokens) {
 		if s.callbacks.OnStatus != nil {
 			s.callbacks.OnStatus("Compacting conversation…")
 		}

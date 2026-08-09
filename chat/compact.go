@@ -43,18 +43,87 @@ func splitForCompaction(msgs []openai.ChatCompletionMessage, keepRecent int) (he
 }
 
 // shouldAutoCompact reports whether the last request's prompt tokens crossed the
-// configured fraction of the context window. Auto-compaction is off when
-// Disabled or when no context window is configured.
-func shouldAutoCompact(cfg types.CompactionConfig, promptTokens int) bool {
-	if cfg.Disabled || cfg.MaxContextTokens <= 0 {
+// configured fraction of the BUDGET — the window minus the reserve. Auto-
+// compaction is off when Disabled, when no window is available, or when the
+// reserve leaves no budget at all (firing on every turn would be worse than
+// not firing).
+//
+// The window is passed in rather than read from cfg because it may have been
+// learned from the backend, which is more trustworthy than any configured
+// guess.
+func shouldAutoCompact(cfg types.CompactionConfig, window, promptTokens int) bool {
+	if cfg.Disabled || window <= 0 {
+		return false
+	}
+	budget := contextBudget(cfg, window)
+	if budget <= 0 {
 		return false
 	}
 	threshold := cfg.Threshold
 	if threshold <= 0 || threshold > 1 {
 		threshold = 0.8
 	}
-	limit := int(float64(cfg.MaxContextTokens) * threshold)
-	return promptTokens >= limit
+	return promptTokens >= int(float64(budget)*threshold)
+}
+
+// minPlausibleWindow and maxPlausibleWindow bound what rememberWindow will
+// believe. The band rejects a MISPARSE, not a small model: a 2048- or
+// 4096-context model is exactly nib's audience, so the floor sits below any
+// real served model and above any plausible misparse of an output-token count
+// (the largest default max_tokens backends print in overflow errors is in the
+// hundreds — vLLM's "512 output tokens" is the known example, and it is only
+// skipped today because tokenCountRe's \s* cannot span the word "output").
+//
+// The ceiling exists because strconv.Atoi clamps an absurdly long digit run to
+// MaxInt instead of erroring, so garbage lands far ABOVE any floor rather than
+// below it. 1<<30 is roughly a hundred times the largest window any model has
+// ever advertised (~10M tokens), so it cannot reject a real backend, while
+// still catching the clamp.
+const (
+	minPlausibleWindow = 1024
+	maxPlausibleWindow = 1 << 30
+)
+
+// rememberWindow records a context window a backend stated for a specific
+// model. Values outside the plausibility band are discarded rather than
+// stored, because an implausible figure is a parse artefact and storing one
+// would be worse than the configured guess it replaced: too small and
+// compaction fires every turn, too large and it never fires at all.
+func (s *Session) rememberWindow(window int, model string) {
+	if window < minPlausibleWindow || window > maxPlausibleWindow || model == "" {
+		return
+	}
+	s.modelMu.Lock()
+	defer s.modelMu.Unlock()
+	s.learnedWindow, s.learnedWindowModel = window, model
+}
+
+// contextWindow returns the window compaction budgets against: the learned one
+// when it belongs to the model currently in use, otherwise the configured
+// MaxContextTokens.
+//
+// Keyed on the model NAME rather than on which method last changed the model:
+// Reload re-reads config and can change cfg.Model exactly as SwitchModel does,
+// so a rule written in terms of SwitchModel would carry a 262k window into an
+// 8k model and suppress compaction precisely when it is most needed.
+func (s *Session) contextWindow() int {
+	s.modelMu.RLock()
+	learned, forModel, current := s.learnedWindow, s.learnedWindowModel, s.llmModel
+	s.modelMu.RUnlock()
+
+	if learned > 0 && forModel == current {
+		return learned
+	}
+	return s.compaction.MaxContextTokens
+}
+
+// contextBudget is the window minus the reserve held back for the response.
+func contextBudget(cfg types.CompactionConfig, window int) int {
+	b := window - cfg.ReserveTokens
+	if b < 0 {
+		return 0
+	}
+	return b
 }
 
 // estimateTokens is a cheap byte/4 approximation, used when no real usage figure

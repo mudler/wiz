@@ -59,18 +59,20 @@ func TestSplitForCompactionNothingToCompact(t *testing.T) {
 }
 
 func TestShouldAutoCompact(t *testing.T) {
+	// No ReserveTokens here, so the budget is the whole window and these
+	// thresholds mean exactly what they meant before the signature changed.
 	cfg := types.CompactionConfig{MaxContextTokens: 1000, Threshold: 0.8}
-	if shouldAutoCompact(cfg, 799) {
+	if shouldAutoCompact(cfg, 1000, 799) {
 		t.Fatal("799 < 800 should not trigger")
 	}
-	if !shouldAutoCompact(cfg, 800) {
+	if !shouldAutoCompact(cfg, 1000, 800) {
 		t.Fatal("800 >= 800 should trigger")
 	}
-	if shouldAutoCompact(types.CompactionConfig{Disabled: true, MaxContextTokens: 1000, Threshold: 0.8}, 999999) {
+	if shouldAutoCompact(types.CompactionConfig{Disabled: true, MaxContextTokens: 1000, Threshold: 0.8}, 1000, 999999) {
 		t.Fatal("Disabled must never trigger")
 	}
-	if shouldAutoCompact(types.CompactionConfig{MaxContextTokens: 0}, 999999) {
-		t.Fatal("MaxContextTokens=0 must never trigger")
+	if shouldAutoCompact(types.CompactionConfig{MaxContextTokens: 0}, 0, 999999) {
+		t.Fatal("a zero window must never trigger")
 	}
 }
 
