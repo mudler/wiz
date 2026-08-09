@@ -88,6 +88,12 @@ const (
 	maxPlausibleWindow = 1 << 30
 )
 
+// defaultReserveTokens is the fallback for an unset CompactionConfig.
+// ReserveTokens. It must match config.Load's default (config cannot be imported
+// from here — chat is downstream of it — so the number is repeated, as the 0.8
+// Threshold default already is).
+const defaultReserveTokens = 4096
+
 // rememberWindow records a context window a backend stated for a specific
 // model. Values outside the plausibility band are discarded rather than
 // stored, because an implausible figure is a parse artefact and storing one
@@ -185,8 +191,21 @@ func (s *Session) overflowRetries() int {
 // window is learned from an overflow error, LEARNING a real 4096 window would
 // be what disabled compaction for the model that just overflowed — the exact
 // inverse of the point of learning it.
+// The default is applied HERE as well as in config.Load, the same way
+// shouldAutoCompact defaults Threshold at its use site. An embedder calling
+// chat.NewSession directly never passes through config.Load, and an unset
+// ReserveTokens would then reserve nothing — which is precisely the failure
+// this budget exists to prevent, arriving through the one door nobody watches.
+//
+// It lands BEFORE the quarter-window clamp, so the two stay coherent: a small
+// window still clamps the default (a 8192-token model reserves 2048, not 4096)
+// rather than the clamp being bypassed by a zero.
 func ContextBudget(cfg types.CompactionConfig, window int) int {
-	reserve := min(cfg.ReserveTokens, window/4)
+	reserve := cfg.ReserveTokens
+	if reserve <= 0 {
+		reserve = defaultReserveTokens
+	}
+	reserve = min(reserve, window/4)
 	b := window - reserve
 	if b < 0 {
 		return 0

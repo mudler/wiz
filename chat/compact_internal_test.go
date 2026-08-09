@@ -59,14 +59,21 @@ func TestSplitForCompactionNothingToCompact(t *testing.T) {
 }
 
 func TestShouldAutoCompact(t *testing.T) {
-	// No ReserveTokens here, so the budget is the whole window and these
-	// thresholds mean exactly what they meant before the signature changed.
-	cfg := types.CompactionConfig{MaxContextTokens: 1000, Threshold: 0.8}
-	if shouldAutoCompact(cfg, 1000, 799) {
-		t.Fatal("799 < 800 should not trigger")
+	// ReserveTokens is stated rather than left at zero: zero now means "use the
+	// default", because ContextBudget applies the same 4096 fallback config.Load
+	// does (an embedder calling chat.NewSession directly never passes through
+	// config.Load, and a zero reserve is the failure the reserve exists to
+	// prevent). There is therefore no longer a config that budgets against the
+	// whole window, which is the point.
+	//
+	// 200 is under window/4, so the clamp does not bite: budget 800, trigger at
+	// int(800*0.8) = 640.
+	cfg := types.CompactionConfig{MaxContextTokens: 1000, Threshold: 0.8, ReserveTokens: 200}
+	if shouldAutoCompact(cfg, 1000, 639) {
+		t.Fatal("639 < 640 should not trigger")
 	}
-	if !shouldAutoCompact(cfg, 1000, 800) {
-		t.Fatal("800 >= 800 should trigger")
+	if !shouldAutoCompact(cfg, 1000, 640) {
+		t.Fatal("640 >= 640 should trigger")
 	}
 	if shouldAutoCompact(types.CompactionConfig{Disabled: true, MaxContextTokens: 1000, Threshold: 0.8}, 1000, 999999) {
 		t.Fatal("Disabled must never trigger")

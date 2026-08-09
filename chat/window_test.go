@@ -60,6 +60,51 @@ func TestContextBudgetClampsTheReserveOnASmallWindow(t *testing.T) {
 	}
 }
 
+// An embedder calling chat.NewSession directly never passes through
+// config.Load, so an unset ReserveTokens would hold nothing back — the exact
+// failure the reserve exists to prevent, arriving through the one door nobody
+// watches. Threshold already defaults at its use site; this does the same.
+func TestContextBudgetDefaultsTheReserveWhenUnset(t *testing.T) {
+	var unset types.CompactionConfig // ReserveTokens == 0
+	for _, tc := range []struct{ window, want int }{
+		{262144, 258048}, // 262144 - 4096, not the raw window
+		{128000, 123904},
+	} {
+		if got := ContextBudget(unset, tc.window); got != tc.want {
+			t.Fatalf("budget(%d) with no reserve configured = %d, want %d", tc.window, got, tc.want)
+		}
+	}
+	// And the trigger really moves: at the raw window this would not fire.
+	cfg := types.CompactionConfig{MaxContextTokens: 262144, Threshold: 0.8}
+	if !shouldAutoCompact(cfg, 262144, 207000) {
+		t.Fatal("an embedder that never set ReserveTokens got no reserve at all")
+	}
+}
+
+// The default lands BEFORE the quarter-window clamp, so the two stay coherent:
+// a small window clamps the default rather than the clamp being bypassed by a
+// zero. Same numbers as TestContextBudgetClampsTheReserveOnASmallWindow.
+func TestContextBudgetDefaultedReserveIsStillClamped(t *testing.T) {
+	var unset types.CompactionConfig
+	for _, tc := range []struct{ window, want int }{
+		{4096, 3072}, // default 4096 clamped to 1024
+		{2048, 1536}, // default 4096 clamped to 512
+	} {
+		if got := ContextBudget(unset, tc.window); got != tc.want {
+			t.Fatalf("budget(%d) = %d, want %d: the default escaped the clamp", tc.window, got, tc.want)
+		}
+	}
+}
+
+// A negative reserve is nonsense that would ADD to the budget. It takes the
+// default rather than being trusted.
+func TestContextBudgetIgnoresANegativeReserve(t *testing.T) {
+	cfg := types.CompactionConfig{ReserveTokens: -1000}
+	if got := ContextBudget(cfg, 262144); got != 258048 {
+		t.Fatalf("budget = %d, want 258048: a negative reserve enlarged the budget", got)
+	}
+}
+
 // The reporter's exact configuration from issue #53: they set the true window
 // and still overflowed, because nothing was held back.
 func TestReportersConfigurationNowTriggersBeforeTheLimit(t *testing.T) {

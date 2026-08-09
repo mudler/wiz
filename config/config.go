@@ -382,6 +382,9 @@ func withDefaults(cfg types.Config) types.Config {
 	if cfg.Compaction.KeepRecent == 0 {
 		cfg.Compaction.KeepRecent = 8
 	}
+	// Must match chat.ContextBudget's defaultReserveTokens, which applies the
+	// same fallback for embedders that call chat.NewSession without ever
+	// passing through here.
 	if cfg.Compaction.ReserveTokens == 0 {
 		cfg.Compaction.ReserveTokens = 4096
 	}
