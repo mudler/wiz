@@ -54,8 +54,8 @@ func shouldAutoCompact(cfg types.CompactionConfig, window, promptTokens int) boo
 	if cfg.Disabled || window <= 0 {
 		return false
 	}
-	budget := contextBudget(cfg, window)
-	// Defensive only: contextBudget clamps the reserve to a quarter of the
+	budget := ContextBudget(cfg, window)
+	// Defensive only: ContextBudget clamps the reserve to a quarter of the
 	// window, so a positive window always has a positive budget and the
 	// check above already rejected the rest. It stays because a zero budget
 	// would make the trigger fire on every single turn, which is the one
@@ -125,6 +125,18 @@ func (s *Session) contextWindow() int {
 	return s.compaction.MaxContextTokens
 }
 
+// ContextWindow reports the context window this session is actually budgeting
+// against: the one learned from a backend overflow error when it belongs to the
+// model in use, otherwise the configured MaxContextTokens.
+//
+// It exists for display. The TUI cannot read s.compaction.MaxContextTokens and
+// call it the window, because a learned window silently replaces it — a session
+// configured for 400k against a model that really serves 262k would draw a
+// badge claiming plenty of room while compaction fires.
+func (s *Session) ContextWindow() int {
+	return s.contextWindow()
+}
+
 // canRecoverFromOverflow reports whether a failed run's error is one nib may
 // act on: a context overflow the user did not cancel.
 //
@@ -154,9 +166,14 @@ func (s *Session) overflowRetries() int {
 	return s.overflowRetried
 }
 
-// contextBudget is the window minus the reserve held back for the response,
+// ContextBudget is the window minus the reserve held back for the response,
 // where the reserve is never allowed to claim more than a quarter of the
 // window.
+//
+// Exported so the TUI's context badge can be drawn against the same number
+// auto-compaction triggers on. A badge that budgeted against the raw window
+// disagreed with the moment compaction actually fires, which is the one thing
+// the badge exists to predict.
 //
 // The clamp is not the percentage reserve the spec rejected. The reserve stays
 // a flat cfg.ReserveTokens for every window of 4×ReserveTokens or more — 16384
@@ -168,7 +185,7 @@ func (s *Session) overflowRetries() int {
 // window is learned from an overflow error, LEARNING a real 4096 window would
 // be what disabled compaction for the model that just overflowed — the exact
 // inverse of the point of learning it.
-func contextBudget(cfg types.CompactionConfig, window int) int {
+func ContextBudget(cfg types.CompactionConfig, window int) int {
 	reserve := min(cfg.ReserveTokens, window/4)
 	b := window - reserve
 	if b < 0 {

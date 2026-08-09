@@ -2018,6 +2018,25 @@ func compactNotice(before, after int) string {
 // threshold (clay — the palette's warmest attention color).
 var ctxBadgeWarn = lipgloss.NewStyle().Foreground(theme.Accent)
 
+// contextBudget is the number the badge measures against: the window the
+// session is really using, less the reserve held back for the response. It is
+// what chat.shouldAutoCompact takes its threshold of, so a badge drawn against
+// it reaches 100% exactly where compaction fires.
+//
+// Both halves used to be wrong. The raw cfg.Compaction.MaxContextTokens ignores
+// the reserve (a few percent at 128k) and, worse, ignores a window learned from
+// a backend overflow error: a session configured for 400k against a model that
+// really serves 262k drew a calm badge while compaction ran. The session is the
+// authority whenever there is one; the config is the fallback for a model with
+// no session yet.
+func (m Model) contextBudget() int {
+	window := m.cfg.Compaction.MaxContextTokens
+	if m.session != nil {
+		window = m.session.ContextWindow()
+	}
+	return chat.ContextBudget(m.cfg.Compaction, window)
+}
+
 // contextBadge renders the right-aligned context-size indicator for the bottom
 // bar, e.g. "ctx 8k (6%)". It highlights once usage reaches the auto-compaction
 // threshold. Returns "" when there's nothing to show yet.
@@ -2026,18 +2045,18 @@ func (m Model) contextBadge() string {
 	if used <= 0 {
 		return ""
 	}
-	window := m.cfg.Compaction.MaxContextTokens
-	if window <= 0 {
-		// No configured window (auto-compaction off): show the bare size.
+	budget := m.contextBudget()
+	if budget <= 0 {
+		// No window at all (auto-compaction off): show the bare size.
 		return theme.Meta.Render("ctx " + chat.HumanTokens(used))
 	}
-	pct := used * 100 / window
+	pct := used * 100 / budget
 	label := fmt.Sprintf("ctx %s (%d%%)", chat.HumanTokens(used), pct)
 	threshold := m.cfg.Compaction.Threshold
 	if threshold <= 0 || threshold > 1 {
 		threshold = 0.8
 	}
-	if float64(used) >= float64(window)*threshold {
+	if float64(used) >= float64(budget)*threshold {
 		return ctxBadgeWarn.Render(label)
 	}
 	return theme.Meta.Render(label)
