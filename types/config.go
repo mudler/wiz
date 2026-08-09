@@ -34,6 +34,14 @@ type CompactionConfig struct {
 	Threshold float64 `yaml:"threshold"`
 	// KeepRecent is the number of trailing messages kept verbatim. 0 → default 8.
 	KeepRecent int `yaml:"keep_recent"`
+	// ReserveTokens is held back from the context window before the threshold
+	// applies, because nib's request is not the only claim on the window — the
+	// response needs room in it too.
+	//
+	// A fixed count rather than a fraction on purpose: a reply does not get
+	// longer because the window did, so a percentage over-reserves badly at
+	// large windows and under-reserves at small ones. 0 → default 4096.
+	ReserveTokens int `yaml:"reserve_tokens"`
 }
 
 // ToolOutputPruningConfig controls replacing stale or oversized tool results

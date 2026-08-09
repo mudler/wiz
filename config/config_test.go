@@ -26,8 +26,12 @@ func TestWithDefaultsCompaction(t *testing.T) {
 }
 
 func TestWithDefaultsKeepsUserValues(t *testing.T) {
+	// Every field is set to a non-zero value on purpose: withDefaults reads
+	// "unset" as zero, so a field left out here would be defaulted and the
+	// comparison below would fail for a reason that is not an override bug.
 	in := types.Config{Compaction: types.CompactionConfig{
 		MaxContextTokens: 200000, Threshold: 0.5, KeepRecent: 2, Disabled: true,
+		ReserveTokens: 512,
 	}}
 	got := withDefaults(in)
 	if got.Compaction != in.Compaction {

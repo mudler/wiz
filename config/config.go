@@ -382,6 +382,9 @@ func withDefaults(cfg types.Config) types.Config {
 	if cfg.Compaction.KeepRecent == 0 {
 		cfg.Compaction.KeepRecent = 8
 	}
+	if cfg.Compaction.ReserveTokens == 0 {
+		cfg.Compaction.ReserveTokens = 4096
+	}
 
 	// Tool-output pruning is defaulted as a block, not field by field: a zero
 	// HighWaterTokens is meaningful on its own (it disables size pruning while
