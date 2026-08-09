@@ -41,13 +41,60 @@ func humanizeError(err error) error {
 	if err == nil {
 		return nil
 	}
+	if isContextOverflow(err) {
+		return &FriendlyError{err: err, msg: contextOverflowMessage(err.Error())}
+	}
+	return err
+}
+
+// isContextOverflow reports whether err is a backend complaining that the
+// request did not fit the model's context window. Factored out of
+// humanizeError so the recovery path and the message path cannot drift apart
+// by consulting different marker lists.
+func isContextOverflow(err error) bool {
+	if err == nil {
+		return false
+	}
 	low := strings.ToLower(err.Error())
 	for _, marker := range contextOverflowMarkers {
 		if strings.Contains(low, marker) {
-			return &FriendlyError{err: err, msg: contextOverflowMessage(err.Error())}
+			return true
 		}
 	}
-	return err
+	return false
+}
+
+// learnedWindowFrom extracts the model's real context window from an overflow
+// error, which is the one moment a backend reliably states it. The OpenAI
+// /v1/models schema carries no context length and backends that expose one do
+// so inconsistently, so this error is nib's only trustworthy source; inferring
+// a window from a model name would be a guess presented as a fact.
+//
+// Two figures are required. tokenCountRe can match a single number, and with
+// one number there is no way to tell whether it is the limit or the request
+// size — treating a request size as the window would raise the compaction
+// trigger above the real limit and suppress compaction exactly when it is most
+// needed. Fewer than two figures teaches nothing.
+//
+// The window is the SMALLER figure regardless of the order the backend printed
+// them, matching contextOverflowMessage.
+func learnedWindowFrom(err error) (int, bool) {
+	if !isContextOverflow(err) {
+		return 0, false
+	}
+	m := tokenCountRe.FindAllStringSubmatch(err.Error(), -1)
+	if len(m) < 2 {
+		return 0, false
+	}
+	a, _ := strconv.Atoi(m[0][1])
+	b, _ := strconv.Atoi(m[1][1])
+	if b < a {
+		a = b
+	}
+	if a <= 0 {
+		return 0, false
+	}
+	return a, true
 }
 
 // contextOverflowMessage builds the user-facing text for a context-window
