@@ -43,18 +43,174 @@ func splitForCompaction(msgs []openai.ChatCompletionMessage, keepRecent int) (he
 }
 
 // shouldAutoCompact reports whether the last request's prompt tokens crossed the
-// configured fraction of the context window. Auto-compaction is off when
-// Disabled or when no context window is configured.
-func shouldAutoCompact(cfg types.CompactionConfig, promptTokens int) bool {
-	if cfg.Disabled || cfg.MaxContextTokens <= 0 {
+// configured fraction of the BUDGET — the window minus the reserve. Auto-
+// compaction is off when Disabled or when no window is available (configured or
+// learned).
+//
+// The window is passed in rather than read from cfg because it may have been
+// learned from the backend, which is more trustworthy than any configured
+// guess.
+func shouldAutoCompact(cfg types.CompactionConfig, window, promptTokens int) bool {
+	if cfg.Disabled || window <= 0 {
+		return false
+	}
+	budget := ContextBudget(cfg, window)
+	// Defensive only: ContextBudget clamps the reserve to a quarter of the
+	// window, so a positive window always has a positive budget and the
+	// check above already rejected the rest. It stays because a zero budget
+	// would make the trigger fire on every single turn, which is the one
+	// outcome worse than never firing.
+	if budget <= 0 {
 		return false
 	}
 	threshold := cfg.Threshold
 	if threshold <= 0 || threshold > 1 {
 		threshold = 0.8
 	}
-	limit := int(float64(cfg.MaxContextTokens) * threshold)
-	return promptTokens >= limit
+	return promptTokens >= int(float64(budget)*threshold)
+}
+
+// minPlausibleWindow and maxPlausibleWindow bound what rememberWindow will
+// believe. The band rejects a MISPARSE, not a small model: a 2048- or
+// 4096-context model is exactly nib's audience, so the floor sits below any
+// real served model and above any plausible misparse of an output-token count
+// (the largest default max_tokens backends print in overflow errors is in the
+// hundreds — vLLM's "512 output tokens" is the known example, and it is only
+// skipped today because tokenCountRe's \s* cannot span the word "output").
+//
+// The ceiling exists because strconv.Atoi clamps an absurdly long digit run to
+// MaxInt instead of erroring, so garbage lands far ABOVE any floor rather than
+// below it. 1<<30 is roughly a hundred times the largest window any model has
+// ever advertised (~10M tokens), so it cannot reject a real backend, while
+// still catching the clamp.
+const (
+	minPlausibleWindow = 1024
+	maxPlausibleWindow = 1 << 30
+)
+
+// defaultReserveTokens is the fallback for an unset CompactionConfig.
+// ReserveTokens. It must match config.Load's default (config cannot be imported
+// from here — chat is downstream of it — so the number is repeated, as the 0.8
+// Threshold default already is).
+const defaultReserveTokens = 4096
+
+// rememberWindow records a context window a backend stated for a specific
+// model. Values outside the plausibility band are discarded rather than
+// stored, because an implausible figure is a parse artefact and storing one
+// would be worse than the configured guess it replaced: too small and
+// compaction fires every turn, too large and it never fires at all.
+func (s *Session) rememberWindow(window int, model string) {
+	if window < minPlausibleWindow || window > maxPlausibleWindow || model == "" {
+		return
+	}
+	s.modelMu.Lock()
+	defer s.modelMu.Unlock()
+	s.learnedWindow, s.learnedWindowModel = window, model
+}
+
+// contextWindow returns the window compaction budgets against: the learned one
+// when it belongs to the model currently in use, otherwise the configured
+// MaxContextTokens.
+//
+// Keyed on the model NAME rather than on whichever method changed the model.
+// A window learned from one backend's overflow error is a fact about ONE
+// model, so it is meaningless except read as a pair with llmModel: carrying a
+// 262k window into an 8k model would suppress compaction precisely when it is
+// most needed. Comparing the names makes that safe for every path that can
+// change the model, present or future, without anyone having to remember to
+// clear the field from it. (Today only NewSession and SetModel assign
+// llmModel; Reload does not.)
+func (s *Session) contextWindow() int {
+	s.modelMu.RLock()
+	learned, forModel, current := s.learnedWindow, s.learnedWindowModel, s.llmModel
+	s.modelMu.RUnlock()
+
+	if learned > 0 && forModel == current {
+		return learned
+	}
+	return s.compaction.MaxContextTokens
+}
+
+// ContextWindow reports the context window this session is actually budgeting
+// against: the one learned from a backend overflow error when it belongs to the
+// model in use, otherwise the configured MaxContextTokens.
+//
+// It exists for display. The TUI cannot read s.compaction.MaxContextTokens and
+// call it the window, because a learned window silently replaces it — a session
+// configured for 400k against a model that really serves 262k would draw a
+// badge claiming plenty of room while compaction fires.
+func (s *Session) ContextWindow() int {
+	return s.contextWindow()
+}
+
+// canRecoverFromOverflow reports whether a failed run's error is one nib may
+// act on: a context overflow the user did not cancel.
+//
+// The cancellation half is not redundant with isContextOverflow. Today cogito's
+// retry loop calls backoffOrCancel after every failed attempt and returns
+// ctx.Err() when the context is done, so an interrupt that lands during the
+// request reaches here as "context canceled" and fails the overflow check
+// anyway. That is cogito's mapping, not nib's guarantee: returning the last
+// real error instead would be a perfectly reasonable change, and cancellation
+// can also land in the window between ExecuteTools returning an overflow and
+// this check running. A cancelled turn means the user pressed Ctrl+C, and
+// re-sending the turn is the opposite of what they asked for — so the rule is
+// stated here rather than inferred from another package's error mapping.
+//
+// It is a free function rather than a method because it reads no session state:
+// that keeps the boundary testable without a live turn, which is the only way
+// the interrupt case can be exercised at all (see the note above).
+func canRecoverFromOverflow(turnCtx context.Context, err error) bool {
+	return turnCtx.Err() == nil && isContextOverflow(err)
+}
+
+// overflowRetries reports how many context-overflow recoveries the current turn
+// performed. Read by tests; the cap itself is enforced in SendMessage.
+func (s *Session) overflowRetries() int {
+	s.overflowMu.Lock()
+	defer s.overflowMu.Unlock()
+	return s.overflowRetried
+}
+
+// ContextBudget is the window minus the reserve held back for the response,
+// where the reserve is never allowed to claim more than a quarter of the
+// window.
+//
+// Exported so the TUI's context badge can be drawn against the same number
+// auto-compaction triggers on. A badge that budgeted against the raw window
+// disagreed with the moment compaction actually fires, which is the one thing
+// the badge exists to predict.
+//
+// The clamp is not the percentage reserve the spec rejected. The reserve stays
+// a flat cfg.ReserveTokens for every window of 4×ReserveTokens or more — 16384
+// and up at the 4096 default — and the trigger is still Threshold × budget, not
+// a percentage of the window. The clamp bites only where the flat number is
+// incoherent relative to the window it is being subtracted from: without it a
+// 4096-token model reserves its entire window, the budget is 0, and auto-
+// compaction switches OFF for the model that overflows soonest. Worse, once a
+// window is learned from an overflow error, LEARNING a real 4096 window would
+// be what disabled compaction for the model that just overflowed — the exact
+// inverse of the point of learning it.
+// The default is applied HERE as well as in config.Load, the same way
+// shouldAutoCompact defaults Threshold at its use site. An embedder calling
+// chat.NewSession directly never passes through config.Load, and an unset
+// ReserveTokens would then reserve nothing — which is precisely the failure
+// this budget exists to prevent, arriving through the one door nobody watches.
+//
+// It lands BEFORE the quarter-window clamp, so the two stay coherent: a small
+// window still clamps the default (a 8192-token model reserves 2048, not 4096)
+// rather than the clamp being bypassed by a zero.
+func ContextBudget(cfg types.CompactionConfig, window int) int {
+	reserve := cfg.ReserveTokens
+	if reserve <= 0 {
+		reserve = defaultReserveTokens
+	}
+	reserve = min(reserve, window/4)
+	b := window - reserve
+	if b < 0 {
+		return 0
+	}
+	return b
 }
 
 // estimateTokens is a cheap byte/4 approximation, used when no real usage figure

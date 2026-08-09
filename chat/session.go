@@ -106,16 +106,24 @@ type Session struct {
 	// turn on one client from start to finish while the switch applies from the
 	// next one. The rest of the endpoint state below (apiKey, baseURL,
 	// metadata, reasoningEffort) is fixed at construction and read lock-free.
-	modelMu         sync.RWMutex
-	llmModel        string // guarded by modelMu
-	apiKey          string
-	baseURL         string
-	transcribeModel string
-	visionModel     string
-	videoModel      string
-	workingDir      string
-	metadata        map[string]string // global per-request metadata; merged with per-agent overrides
-	reasoningEffort string            // OpenAI reasoning_effort sent on every request (e.g. "none")
+	modelMu  sync.RWMutex
+	llmModel string // guarded by modelMu
+
+	// learnedWindow is the context window a backend stated in an overflow
+	// error, and learnedWindowModel is the model it was learned for. They are
+	// guarded by modelMu because they are only ever meaningful as a pair with
+	// llmModel, and reading them under a different lock would let a model
+	// switch land between the two reads.
+	learnedWindow      int
+	learnedWindowModel string
+	apiKey             string
+	baseURL            string
+	transcribeModel    string
+	visionModel        string
+	videoModel         string
+	workingDir         string
+	metadata           map[string]string // global per-request metadata; merged with per-agent overrides
+	reasoningEffort    string            // OpenAI reasoning_effort sent on every request (e.g. "none")
 
 	configurator  *manage.Configurator
 	reloadMu      sync.Mutex
@@ -158,6 +166,13 @@ type Session struct {
 	// a stub whose wording changed between calls would move the prompt prefix
 	// just as un-stubbing it would.
 	prunedIDs map[string]string
+
+	// overflowRetried counts context-overflow recoveries in the CURRENT turn.
+	// It exists so a retry can never become a loop, and so tests can assert on
+	// attempts rather than on a raw completion-call count that cogito's own
+	// internal retries make unstable.
+	overflowMu      sync.Mutex
+	overflowRetried int
 
 	tracer *trace.Recorder // non-nil when session tracing is enabled
 
@@ -989,6 +1004,11 @@ func (s *Session) SendMessage(text string, parts ...ContentPart) (string, error)
 	turnCtx := s.beginTurn()
 	s.applyPendingReload()
 	s.allowAllTurn = false
+	// The overflow retry is capped per TURN, not per session: a later turn that
+	// overflows deserves its own recovery attempt.
+	s.overflowMu.Lock()
+	s.overflowRetried = 0
+	s.overflowMu.Unlock()
 	defer s.endTurn()
 
 	// Mark the run live so Inject can target it; clear on return. Drain the
@@ -1021,15 +1041,9 @@ func (s *Session) SendMessage(text string, parts ...ContentPart) (string, error)
 			}
 		}
 	}()
+	s.ensureSystemPrompt()
+
 	s.historyMu.Lock()
-	// Add the system prompt to the persistent fragment only if it is not already
-	// there. s.fragment persists across turns, so re-adding it every turn would
-	// accumulate N identical system messages; cogito merges those into a
-	// position-0 block that grows each turn and defeats the server's prompt-prefix
-	// KV cache (full re-prefill every message). Add it once.
-	if s.systemPrompt != "" && !fragmentHasSystemContent(s.fragment, s.systemPrompt) {
-		s.fragment = s.fragment.AddMessage("system", s.systemPrompt)
-	}
 	s.fragment = buildUserFragment(s.fragment, text, parts)
 	s.messages = append(s.messages, openai.ChatCompletionMessage{
 		Role:    "user",
@@ -1215,7 +1229,77 @@ func (s *Session) SendMessage(text string, parts ...ContentPart) (string, error)
 				s.addUsage(newFragment.Status.CumulativeUsage)
 			}
 
-			err = humanizeError(err)
+			// Context-overflow recovery. The backend has just told us the
+			// model's real window — the one moment it does so reliably — so
+			// keep it, then compact and try the turn again.
+			//
+			// Exactly once. If the overflow comes from the system prompt plus
+			// tool schemas alone, or from a tail splitForCompaction must keep
+			// intact, the second attempt fails identically and a loop would
+			// re-summarise into the same wall, burning tokens every pass.
+			//
+			// Never after an interrupt: a cancelled turnCtx means the user
+			// pressed Ctrl+C, and re-sending is the opposite of what they asked
+			// for. See canRecoverFromOverflow.
+			if canRecoverFromOverflow(turnCtx, err) {
+				if w, ok := learnedWindowFrom(err); ok {
+					s.rememberWindow(w, mainModel)
+				}
+				s.overflowMu.Lock()
+				first := s.overflowRetried == 0
+				s.overflowMu.Unlock()
+
+				if first {
+					cb, ca, cerr := s.compactHistory(turnCtx)
+					switch {
+					case cerr != nil:
+						// Report the ORIGINAL overflow, not the summariser's
+						// failure: the first is the one the user can act on.
+						xlog.Warn("overflow recovery: compaction failed", "error", cerr)
+					case cb == ca:
+						// Nothing to summarise, so a retry would send a
+						// byte-identical request.
+					default:
+						s.overflowMu.Lock()
+						s.overflowRetried++
+						s.overflowMu.Unlock()
+						// compactHistory rebuilt the fragment as [summary] +
+						// tail, and renderMessages skips system content, so the
+						// system prompt was dropped without even being
+						// represented in the summary. SendMessage's own guard
+						// sits ABOVE this loop, so the `continue` below would
+						// re-send the turn with no identity, no working
+						// directory, no skills index and none of the tool
+						// guidance. Re-apply the same guard here: it is a
+						// no-op whenever the prompt survived in the kept tail.
+						s.ensureSystemPrompt()
+						// Announced here, AFTER compaction, and only on the
+						// branch that reaches the `continue` below. The status
+						// promises a retry, and the two branches above are the
+						// cases where no retry happens: the user would be told
+						// nib was retrying and then handed the bare overflow
+						// error, with no corrective status to withdraw the
+						// promise. Compaction is a whole LLM call, so this does
+						// cost the user a few silent seconds before the line
+						// appears — the alternative is a line that lies.
+						if s.callbacks.OnStatus != nil {
+							s.callbacks.OnStatus("Context window exceeded — compacting and retrying…")
+						}
+						if s.callbacks.OnCompactDone != nil {
+							s.callbacks.OnCompactDone(cb, ca)
+						}
+						continue
+					}
+				}
+			}
+
+			// Reached only when no retry is happening: either this turn never
+			// qualified for one, or it already spent its single recovery and
+			// overflowed again. In that second case the message must not advise
+			// clearing the conversation, because compaction just did the
+			// equivalent and the retry has already been made — see
+			// contextOverflowRetriedMessage.
+			err = humanizeTurnError(err, s.overflowRetries() > 0)
 			if s.callbacks.OnError != nil {
 				s.callbacks.OnError(err)
 			}
@@ -1301,7 +1385,7 @@ func (s *Session) SendMessage(text string, parts ...ContentPart) (string, error)
 	if s.fragment.Status != nil {
 		promptTokens = s.fragment.Status.LastUsage.PromptTokens
 	}
-	if shouldAutoCompact(s.compaction, promptTokens) {
+	if shouldAutoCompact(s.compaction, s.contextWindow(), promptTokens) {
 		if s.callbacks.OnStatus != nil {
 			s.callbacks.OnStatus("Compacting conversation…")
 		}
@@ -1591,6 +1675,37 @@ func (s *Session) Close() error {
 		firstErr = err
 	}
 	return firstErr
+}
+
+// ensureSystemPrompt adds the system prompt to the persistent fragment only if
+// it is not already there. s.fragment persists across turns, so re-adding it
+// every turn would accumulate N identical system messages; cogito merges those
+// into a position-0 block that grows each turn and defeats the server's
+// prompt-prefix KV cache (full re-prefill every message). Add it once.
+//
+// It is a method rather than four inline lines because there are now TWO places
+// that must hold this invariant, and only one of them is obvious. SendMessage
+// calls it once per turn, above the goal loop. compactHistory REPLACES the
+// fragment with [summary] + tail — and renderMessages skips system content, so
+// the prompt is neither kept nor summarised — which means the overflow
+// recovery's `continue` re-enters the loop with the identity, working
+// directory, skills index and tool guidance all gone, silently, on the one path
+// whose whole purpose is to complete the turn. Any future caller that rebuilds
+// the fragment mid-turn has the same duty; giving the rule a name is what makes
+// it possible to discharge.
+//
+// Appending is enough even though the prompt belongs at position 0: cogito's
+// normalizeSystemMessages hoists every system message into a single deduped
+// block at the front before the request goes out.
+func (s *Session) ensureSystemPrompt() {
+	if s.systemPrompt == "" {
+		return
+	}
+	s.historyMu.Lock()
+	defer s.historyMu.Unlock()
+	if !fragmentHasSystemContent(s.fragment, s.systemPrompt) {
+		s.fragment = s.fragment.AddMessage("system", s.systemPrompt)
+	}
 }
 
 // fragmentHasSystemContent reports whether the fragment already carries a system

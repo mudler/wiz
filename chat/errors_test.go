@@ -46,6 +46,51 @@ func TestHumanizeErrorContextOverflow(t *testing.T) {
 	}
 }
 
+// The spec's commitment: when the retry ALSO fails, the error says compaction
+// was already attempted, so the user is not advised to do the thing nib just
+// did. The first overflow keeps the original advice, which is still correct
+// there — this is one test so the two texts cannot drift apart unnoticed.
+func TestHumanizeTurnErrorAfterCompaction(t *testing.T) {
+	raw := "request (9739 tokens) exceeds the available context size (8192 tokens), try increasing it"
+	orig := errors.New(raw)
+
+	t.Run("first overflow still advises clearing", func(t *testing.T) {
+		msg := humanizeTurnError(orig, false).Error()
+		if !strings.Contains(msg, `clear the conversation ("clear")`) {
+			t.Fatalf("the first overflow dropped advice that is still correct: %q", msg)
+		}
+		if strings.Contains(msg, "compacting") {
+			t.Fatalf("the first overflow claims a compaction that never happened: %q", msg)
+		}
+	})
+
+	t.Run("after a failed retry", func(t *testing.T) {
+		got := humanizeTurnError(orig, true)
+		msg := got.Error()
+		if strings.Contains(msg, "clear the conversation") {
+			t.Fatalf("the user is told to clear a conversation nib already compacted: %q", msg)
+		}
+		if !strings.Contains(msg, "compacting the conversation and retrying") {
+			t.Fatalf("the message does not say compaction was already attempted: %q", msg)
+		}
+		// The figures are the point of the message; the shared helper must feed
+		// both texts identically.
+		if !strings.Contains(msg, "needs ~9739 tokens") || !strings.Contains(msg, "model allows 8192") {
+			t.Fatalf("token counts wrong in %q", msg)
+		}
+		if !errors.Is(got, orig) {
+			t.Fatalf("Unwrap chain broken; errors.Is(got, orig) = false")
+		}
+	})
+
+	t.Run("a non-overflow failure is untouched by the flag", func(t *testing.T) {
+		other := errors.New("connection refused")
+		if got := humanizeTurnError(other, true); got != other {
+			t.Fatalf("unrelated error rewritten as an overflow: %q", got.Error())
+		}
+	})
+}
+
 func TestHumanizeErrorPassthrough(t *testing.T) {
 	if humanizeError(nil) != nil {
 		t.Fatalf("nil must pass through as nil")

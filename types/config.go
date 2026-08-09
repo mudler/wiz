@@ -26,14 +26,28 @@ type AgentOptions struct {
 type CompactionConfig struct {
 	// Disabled turns OFF automatic compaction. Zero value (false) = auto ON.
 	Disabled bool `yaml:"disabled"`
-	// MaxContextTokens is the model context window used to compute the trigger.
-	// 0 → default 128000.
+	// MaxContextTokens is the configured model context window. It is a guess,
+	// and a window a backend states in an overflow error replaces it for the
+	// model that stated it. 0 → default 128000.
 	MaxContextTokens int `yaml:"max_context_tokens"`
-	// Threshold is the fraction of MaxContextTokens at which auto-compaction
-	// fires. 0 → default 0.8.
+	// Threshold is the fraction of the BUDGET — the window in use less
+	// ReserveTokens — at which auto-compaction fires. 0 → default 0.8.
 	Threshold float64 `yaml:"threshold"`
 	// KeepRecent is the number of trailing messages kept verbatim. 0 → default 8.
 	KeepRecent int `yaml:"keep_recent"`
+	// ReserveTokens is held back from the context window before the threshold
+	// applies, because nib's request is not the only claim on the window — the
+	// response needs room in it too.
+	//
+	// A fixed count rather than a fraction on purpose: a reply does not get
+	// longer because the window did, so a percentage over-reserves badly at
+	// large windows and under-reserves at small ones. 0 → default 4096.
+	//
+	// It is capped at a quarter of the window in use, so that a flat count
+	// larger than the window itself cannot reserve all of it and leave
+	// compaction with nothing to trigger on (see chat.ContextBudget). At the
+	// 4096 default the cap applies only below a 16384-token window.
+	ReserveTokens int `yaml:"reserve_tokens"`
 }
 
 // ToolOutputPruningConfig controls replacing stale or oversized tool results

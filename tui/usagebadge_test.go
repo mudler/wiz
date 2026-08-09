@@ -98,6 +98,126 @@ func TestWideFooterShowsBothBadges(t *testing.T) {
 	}
 }
 
+// The badge predicts auto-compaction, so it has to be drawn against the same
+// number the trigger uses: the window less the reserve. Against the raw window
+// it read 78% at the moment compaction fired, which is the one reading it must
+// never give.
+func TestContextBadgeSubtractsTheReserve(t *testing.T) {
+	m := Model{width: 120, contextTokens: 100000}
+	m.cfg.Compaction = types.CompactionConfig{
+		MaxContextTokens: 128000, Threshold: 0.8, ReserveTokens: 4096,
+	}
+
+	if got := m.contextBudget(); got != 123904 {
+		t.Fatalf("contextBudget = %d, want 128000-4096 = 123904", got)
+	}
+	got := m.contextBadge()
+	if !strings.Contains(got, "(80%)") {
+		t.Fatalf("contextBadge = %q, want 80%% of the 123904-token budget", got)
+	}
+	if strings.Contains(got, "(78%)") {
+		t.Fatalf("contextBadge = %q; still budgeting against the raw window", got)
+	}
+}
+
+// With compaction disabled there is no moment for the badge to predict, so it
+// must not highlight — the highlight is a warning about something that is about
+// to happen, and with Disabled set nothing is. The percentage still shows: it is
+// real headroom against a real budget.
+func TestContextBadgeDoesNotWarnWhenCompactionIsDisabled(t *testing.T) {
+	// Identical to TestContextBadgeSubtractsTheReserve's numbers — 80% of the
+	// budget, which is exactly the trigger — so the only difference is Disabled.
+	base := types.CompactionConfig{
+		MaxContextTokens: 128000, Threshold: 0.8, ReserveTokens: 4096,
+	}
+
+	on := Model{width: 120, contextTokens: 100000}
+	on.cfg.Compaction = base
+	if !on.contextBadgeWarns(100000, on.contextBudget()) {
+		t.Fatal("the badge does not warn with compaction ON at the trigger; this test is not comparing against a warning at all")
+	}
+
+	base.Disabled = true
+	off := Model{width: 120, contextTokens: 100000}
+	off.cfg.Compaction = base
+	if off.contextBadgeWarns(100000, off.contextBudget()) {
+		t.Fatal("the badge warns at 80% while compaction is disabled, predicting a compaction that cannot fire")
+	}
+	if got := off.contextBadge(); !strings.Contains(got, "(80%)") {
+		t.Fatalf("contextBadge = %q, want the percentage still shown", got)
+	}
+}
+
+// overflowingOpenAI always answers with the llama.cpp-shaped 400 that states the
+// model's real window, so a session driven through it learns 262144 whatever it
+// was configured with.
+func overflowingOpenAI() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error": map[string]any{
+				"message": "request (368203 tokens) exceeds the available context size (262144 tokens)",
+				"type":    "invalid_request_error",
+			},
+		})
+	}
+}
+
+// The badge follows the window the session is really budgeting against, not the
+// configured guess.
+//
+// This is the case that made the old badge actively misleading rather than
+// merely imprecise: a config of 400k against a backend that serves 262k drew a
+// calm 52% while compaction was already firing. A real session is the only
+// honest way to reach that state from out here — the learned window is set from
+// inside a failed turn, and nothing in chat exports a setter for it.
+func TestContextBadgeFollowsTheLearnedWindow(t *testing.T) {
+	xlog.SetLogger(xlog.NewLogger(xlog.LogLevel("error"), ""))
+
+	srv := httptest.NewServer(overflowingOpenAI())
+	t.Cleanup(srv.Close)
+
+	compaction := types.CompactionConfig{
+		// 400000 configured against a backend that states 262144: the two must
+		// differ, or "follows the learned window" would pass on the fallback.
+		MaxContextTokens: 400000, Threshold: 0.8, KeepRecent: 2, ReserveTokens: 4096,
+	}
+	s, err := chat.NewSession(context.Background(), types.Config{
+		Model:        "fake-model",
+		APIKey:       "fake-key",
+		BaseURL:      srv.URL + "/v1",
+		LogLevel:     "error",
+		ApprovalMode: "auto",
+		AgentOptions: types.AgentOptions{Iterations: 10, MaxAttempts: 3, MaxRetries: 1},
+		Compaction:   compaction,
+	}, chat.Callbacks{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	// The turn cannot succeed against a backend that only overflows; the point
+	// is that the window it stated was kept.
+	if _, err := s.SendMessage("hello"); err == nil {
+		t.Fatal("the turn succeeded against an always-overflowing backend; the fixture proves nothing")
+	}
+	if got := s.ContextWindow(); got != 262144 {
+		t.Fatalf("session window = %d, want the learned 262144: nothing was learned, so the badge cannot be tested", got)
+	}
+
+	m := Model{width: 120, contextTokens: 209000, session: s}
+	m.cfg.Compaction = compaction
+
+	got := m.contextBadge()
+	if !strings.Contains(got, "(80%)") {
+		t.Fatalf("contextBadge = %q, want 80%% of the learned window's budget (262144-4096)", got)
+	}
+	if strings.Contains(got, "(52%)") {
+		t.Fatalf("contextBadge = %q; still budgeting against the configured 400000 while compaction fires", got)
+	}
+}
+
 // billingOpenAI is a minimal non-streaming OpenAI-compatible endpoint that
 // replies with a plain stop message AND reports token usage. The usage block is
 // the whole point: a handler that omitted it would let the refresh test pass
