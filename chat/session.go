@@ -1256,9 +1256,6 @@ func (s *Session) SendMessage(text string, parts ...ContentPart) (string, error)
 				s.overflowMu.Unlock()
 
 				if first {
-					if s.callbacks.OnStatus != nil {
-						s.callbacks.OnStatus("Context window exceeded — compacting and retrying…")
-					}
 					cb, ca, cerr := s.compactHistory(turnCtx)
 					switch {
 					case cerr != nil:
@@ -1272,6 +1269,18 @@ func (s *Session) SendMessage(text string, parts ...ContentPart) (string, error)
 						s.overflowMu.Lock()
 						s.overflowRetried++
 						s.overflowMu.Unlock()
+						// Announced here, AFTER compaction, and only on the
+						// branch that reaches the `continue` below. The status
+						// promises a retry, and the two branches above are the
+						// cases where no retry happens: the user would be told
+						// nib was retrying and then handed the bare overflow
+						// error, with no corrective status to withdraw the
+						// promise. Compaction is a whole LLM call, so this does
+						// cost the user a few silent seconds before the line
+						// appears — the alternative is a line that lies.
+						if s.callbacks.OnStatus != nil {
+							s.callbacks.OnStatus("Context window exceeded — compacting and retrying…")
+						}
 						if s.callbacks.OnCompactDone != nil {
 							s.callbacks.OnCompactDone(cb, ca)
 						}

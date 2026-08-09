@@ -310,6 +310,92 @@ func TestOverflowSkipsRetryWhenCompactionIsANoOp(t *testing.T) {
 	}
 }
 
+// retryStatusRecorder collects every OnStatus line a turn emits, and the
+// overflow announcement out of them. The mutex is not decoration: callbacks run
+// on whatever goroutine the turn is on, and this suite runs under -race.
+type retryStatusRecorder struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (r *retryStatusRecorder) callbacks() Callbacks {
+	return Callbacks{OnStatus: func(status string) {
+		r.mu.Lock()
+		r.lines = append(r.lines, status)
+		r.mu.Unlock()
+	}}
+}
+
+// announcedRetry reports whether the turn told the user it was retrying.
+func (r *retryStatusRecorder) announcedRetry() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, l := range r.lines {
+		if strings.Contains(l, "compacting and retrying") {
+			return true
+		}
+	}
+	return false
+}
+
+// The promise is kept: a recovery that really retries says so.
+func TestOverflowAnnouncesTheRetryThatHappens(t *testing.T) {
+	rec := &retryStatusRecorder{}
+	s := newOverflowSession(t, &overflowLLM{failures: 1})
+	s.callbacks = rec.callbacks()
+
+	if _, err := s.SendMessage("what changed?"); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	if s.overflowRetries() != 1 {
+		t.Fatalf("overflow retries = %d, want 1: this test is not exercising a retry at all", s.overflowRetries())
+	}
+	if !rec.announcedRetry() {
+		t.Fatalf("a real retry went unannounced; statuses seen: %v", rec.lines)
+	}
+}
+
+// And it is not made when it cannot be kept. The status fired BEFORE compaction
+// ran, so both no-retry branches — a failed summariser and a compaction with
+// nothing to summarise — told the user nib was retrying and then handed them the
+// bare overflow error, with no corrective status to withdraw it.
+func TestOverflowDoesNotAnnounceARetryItWillNotMake(t *testing.T) {
+	t.Run("compaction fails", func(t *testing.T) {
+		rec := &retryStatusRecorder{}
+		s := newOverflowSession(t, &summaryFailingLLM{overflowLLM: overflowLLM{failures: 99}})
+		s.callbacks = rec.callbacks()
+
+		if _, err := s.SendMessage("what changed?"); err == nil {
+			t.Fatal("expected the turn to fail")
+		}
+		if s.overflowRetries() != 0 {
+			t.Fatalf("overflow retries = %d, want 0: no retry was supposed to happen here", s.overflowRetries())
+		}
+		if rec.announcedRetry() {
+			t.Fatalf("promised a retry that never happened; statuses seen: %v", rec.lines)
+		}
+	})
+
+	t.Run("nothing to compact", func(t *testing.T) {
+		rec := &retryStatusRecorder{}
+		s := newOverflowSession(t, &overflowLLM{failures: 99})
+		s.callbacks = rec.callbacks()
+		// See TestOverflowSkipsRetryWhenCompactionIsANoOp: an empty starting
+		// fragment is the state that really has nothing to compact.
+		s.fragment = cogito.NewEmptyFragment()
+
+		if _, err := s.SendMessage("what changed?"); err == nil {
+			t.Fatal("expected the turn to fail")
+		}
+		if s.overflowRetries() != 0 {
+			t.Fatalf("overflow retries = %d, want 0: no retry was supposed to happen here", s.overflowRetries())
+		}
+		if rec.announcedRetry() {
+			t.Fatalf("promised a retry that never happened; statuses seen: %v", rec.lines)
+		}
+	})
+}
+
 // summaryFailingLLM overflows on completions AND on the summarising call:
 // compaction is an LLM call built from the same oversized history, so the
 // history that broke the turn can break the summary too.
