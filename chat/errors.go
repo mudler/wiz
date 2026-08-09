@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -8,10 +9,24 @@ import (
 )
 
 // contextOverflowMarkers are substrings different backends emit when a request
-// exceeds the model's context window. The phrasing varies:
-//   - llama.cpp / LocalAI: "request (9739 tokens) exceeds the available context size (8192 tokens)"
-//   - OpenAI:              "This model's maximum context length is 8192 tokens. However, your messages resulted in 9739 tokens"
-//   - vLLM:                "maximum context length is 8192 tokens"
+// exceeds the model's context window. Only a fragment of each message is
+// matched here, because the wording around it varies. The full messages, which
+// learnedWindowFrom parses for the model's stated limit, are:
+//
+//   - llama.cpp / LocalAI (tools/server/server-context.cpp):
+//     "request (9739 tokens) exceeds the available context size (8192 tokens), try increasing it"
+//   - OpenAI:
+//     "This model's maximum context length is 8192 tokens. However, your messages resulted in 9739 tokens. Please reduce the length of the messages."
+//   - vLLM, current (vllm/renderers/params.py):
+//     "This model's maximum context length is 8192 tokens. However, you requested 512 output tokens and your prompt contains 9739 input tokens, for a total of 10251 tokens. Please reduce the length of the input prompt or the number of requested output tokens."
+//   - vLLM, older OpenAI-compatible server:
+//     "This model's maximum context length is 8192 tokens. However, you requested 10251 tokens (9739 in the messages, 512 in the completion). Please reduce the length of the messages or completion."
+//
+// This comment used to abbreviate vLLM's message to "maximum context length is
+// 8192 tokens". That fragment is enough to trip a marker but carries only ONE
+// figure, so it teaches learnedWindowFrom nothing — an abbreviation that reads
+// as a complete message invites tests asserting coverage nib does not have.
+// Record the whole thing.
 var contextOverflowMarkers = []string{
 	"exceeds the available context size",
 	"maximum context length",
@@ -52,10 +67,14 @@ func humanizeError(err error) error {
 // humanizeError so the recovery path and the message path cannot drift apart
 // by consulting different marker lists.
 func isContextOverflow(err error) bool {
-	if err == nil {
-		return false
-	}
-	low := strings.ToLower(err.Error())
+	return err != nil && hasOverflowMarker(err.Error())
+}
+
+// hasOverflowMarker holds the single walk over contextOverflowMarkers. Both
+// isContextOverflow and learnedWindowFrom go through it, so there is exactly
+// one marker list and one matching rule in the package.
+func hasOverflowMarker(msg string) bool {
+	low := strings.ToLower(msg)
 	for _, marker := range contextOverflowMarkers {
 		if strings.Contains(low, marker) {
 			return true
@@ -78,11 +97,30 @@ func isContextOverflow(err error) bool {
 //
 // The window is the SMALLER figure regardless of the order the backend printed
 // them, matching contextOverflowMessage.
+//
+// The whole unwrap chain is tried, not just err.Error(). humanizeError wraps
+// the backend error in a FriendlyError whose own text drops the second figure
+// — contextOverflowMessage prints "model allows 262144)" with no "tokens" for
+// tokenCountRe to anchor on — so reading only the outermost message would
+// learn nothing from a humanized error. Recovery runs before humanizeError
+// today, but that ordering is one edit away from silently never learning a
+// window again, and no test would catch it. Parsing every level makes the
+// order irrelevant.
 func learnedWindowFrom(err error) (int, bool) {
-	if !isContextOverflow(err) {
+	for e := err; e != nil; e = errors.Unwrap(e) {
+		if n, ok := windowFromMessage(e.Error()); ok {
+			return n, true
+		}
+	}
+	return 0, false
+}
+
+// windowFromMessage applies the two-figure rule to one error message.
+func windowFromMessage(msg string) (int, bool) {
+	if !hasOverflowMarker(msg) {
 		return 0, false
 	}
-	m := tokenCountRe.FindAllStringSubmatch(err.Error(), -1)
+	m := tokenCountRe.FindAllStringSubmatch(msg, -1)
 	if len(m) < 2 {
 		return 0, false
 	}
