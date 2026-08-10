@@ -14,15 +14,16 @@ import (
 	"time"
 
 	"github.com/mudler/nib/hooks"
+	"github.com/mudler/nib/llmprovider"
 	"github.com/mudler/nib/manage"
 	wizmcp "github.com/mudler/nib/mcp"
+	"github.com/mudler/nib/provenance"
 	"github.com/mudler/nib/specialist"
 	"github.com/mudler/nib/trace"
 	"github.com/mudler/nib/types"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/mudler/cogito"
-	"github.com/mudler/cogito/clients"
 	"github.com/mudler/xlog"
 	openai "github.com/sashabaranov/go-openai"
 )
@@ -43,23 +44,27 @@ type Session struct {
 	// surfaced to the UI). SendMessage mutates both as a turn progresses; the
 	// lock lets ExportHistory take a consistent copy from another goroutine
 	// while a turn is running.
-	historyMu           sync.Mutex
-	fragment            cogito.Fragment
-	messages            []openai.ChatCompletionMessage
-	callbacks           Callbacks
-	systemPrompt        string
-	loadedSkills        string // eager-loaded /skill instructions, re-applied across reloads
-	skills              []types.Skill
-	cogitoOptions       types.AgentOptions
-	compaction          types.CompactionConfig
-	allowedTools        map[string]bool  // Tools that don't need approval this session
-	toolAllow           map[string]bool  // if non-empty, the only built-in tools exposed to the model
-	allowedBashPrefixes map[string]bool  // bash first-word grants ("git" → simple `git …` auto-approved)
-	autoApprove         bool             // approval_mode: auto — approve every tool call
-	allowAllTurn        bool             // user chose "allow all this turn"; reset each top-level turn
-	approvalMode        string           // raw approval_mode: "" / "prompt" / "strict" / "allowlist" / "auto"
-	readOnlyCommands    readOnlyCommands // bash commands auto-approved in prompt mode
-	hooks               *hooks.Dispatcher
+	historyMu            sync.Mutex
+	fragment             cogito.Fragment
+	messages             []openai.ChatCompletionMessage
+	callbacks            Callbacks
+	systemPrompt         string
+	loadedSkills         string // eager-loaded /skill instructions, re-applied across reloads
+	skills               []types.Skill
+	cogitoOptions        types.AgentOptions
+	compaction           types.CompactionConfig
+	allowedTools         map[string]bool  // Tools that don't need approval this session
+	toolAllow            map[string]bool  // if non-empty, the only built-in tools exposed to the model
+	allowedBashPrefixes  map[string]bool  // bash first-word grants ("git" → simple `git …` auto-approved)
+	autoApprove          bool             // approval_mode: auto — approve every tool call
+	allowAllTurn         bool             // user chose "allow all this turn"; reset each top-level turn
+	approvalMode         string           // raw approval_mode: "" / "prompt" / "strict" / "allowlist" / "auto"
+	readOnlyCommands     readOnlyCommands // bash commands auto-approved in prompt mode
+	hooks                *hooks.Dispatcher
+	provenanceMu         sync.Mutex
+	externalSources      map[string]provenance.Envelope
+	externalToolNames    map[string]bool // tools supplied by configured/plugin MCP servers
+	provenanceClassifier provenance.Classifier
 
 	agentMu    sync.Mutex
 	agentStart map[string]time.Time // sub-agent ID -> spawn time, for elapsed
@@ -108,6 +113,7 @@ type Session struct {
 	// metadata, reasoningEffort) is fixed at construction and read lock-free.
 	modelMu         sync.RWMutex
 	llmModel        string // guarded by modelMu
+	mainProvider    types.ModelProviderConfig
 	apiKey          string
 	baseURL         string
 	transcribeModel string
@@ -223,11 +229,31 @@ func (s *Session) newAgentLLM(mainModel, requested string, temperature float32, 
 	}
 	// metadata is this agent type's override; overlay it on the global
 	// session metadata (per-key: agent wins, global-only keys inherited).
-	agentLLM := clients.NewLocalAILLM(chosen, s.apiKey, s.baseURL)
-	agentLLM.SetTemperature(temperature)
-	agentLLM.SetMetadata(mergeMetadata(s.metadata, metadata))
-	agentLLM.SetReasoningEffort(s.reasoningEffort)
+	provider := s.resolvedSessionProvider()
+	provider.Model = chosen
+	provider.Metadata = mergeMetadata(s.metadata, metadata)
+	provider.ReasoningEffort = s.reasoningEffort
+	agentLLM, err := llmprovider.NewWithTemperature(provider, temperature)
+	if err != nil {
+		xlog.Warn("could not create sub-agent LLM; using the current main LLM", "error", err)
+		llm, _ := s.currentLLM()
+		return llm
+	}
 	return agentLLM
+}
+
+func (s *Session) resolvedSessionProvider() types.ModelProviderConfig {
+	if s.mainProvider.Configured() {
+		return s.mainProvider
+	}
+	return types.ModelProviderConfig{
+		Provider:        "openai",
+		Model:           s.llmModel,
+		APIKey:          s.apiKey,
+		BaseURL:         s.baseURL,
+		Metadata:        s.metadata,
+		ReasoningEffort: s.reasoningEffort,
+	}
 }
 
 // mergeMetadata overlays per-agent metadata on top of the global metadata,
@@ -291,10 +317,15 @@ func NewSession(ctx context.Context, cfg types.Config, callbacks Callbacks, tran
 	// text in a "reasoning" response field, which go-openai's SDK — and so
 	// OpenAIClient — doesn't know about (it only binds the older, now-deprecated
 	// "reasoning_content" key). LocalAIClient parses both.
-	llmClient := clients.NewLocalAILLM(cfg.Model, cfg.APIKey, cfg.BaseURL)
-	llmClient.SetMetadata(cfg.Metadata)
-	llmClient.SetReasoningEffort(cfg.ReasoningEffort)
-	var llm cogito.LLM = llmClient
+	mainProvider := cfg.ResolvedMainModel()
+	llm, err := llmprovider.New(mainProvider)
+	if err != nil {
+		return nil, fmt.Errorf("create main LLM: %w", err)
+	}
+	classifier, err := provenance.ClassifierForConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
 
 	// Session tracing: wrap the LLM so every call is appended to the transcript.
 	// Tracing is only ever on because someone asked for it, so a recorder that
@@ -311,7 +342,7 @@ func NewSession(ctx context.Context, cfg types.Config, callbacks Callbacks, tran
 			return nil, fmt.Errorf("cannot write trace to %s: %w", cfg.TraceDir, err)
 		}
 		tracer = rec
-		llm = trace.NewRecordingLLM(llm, rec, cfg.Model, "")
+		llm = trace.NewRecordingLLM(llm, rec, mainProvider.Model, "")
 	}
 
 	agentManager := cogito.NewAgentManager()
@@ -332,38 +363,40 @@ func NewSession(ctx context.Context, cfg types.Config, callbacks Callbacks, tran
 	}
 
 	s := &Session{
-		ctx:                 ctx,
-		llm:                 llm,
-		clients:             clients,
-		fragment:            cogito.NewEmptyFragment(),
-		messages:            []openai.ChatCompletionMessage{},
-		callbacks:           callbacks,
-		inject:              make(chan openai.ChatCompletionMessage, 16),
-		cogitoOptions:       cfg.AgentOptions,
-		compaction:          cfg.Compaction,
-		pruning:             cfg.ToolOutputPruning,
-		allowedTools:        make(map[string]bool),
-		toolAllow:           make(map[string]bool),
-		allowedBashPrefixes: make(map[string]bool),
-		agentStart:          make(map[string]time.Time),
-		agentManager:        agentManager,
-		agentLogs:           newAgentLogStore(),
-		llmModel:            cfg.Model,
-		apiKey:              cfg.APIKey,
-		baseURL:             cfg.BaseURL,
-		transcribeModel:     cfg.TranscribeModel,
-		visionModel:         cfg.VisionModel,
-		videoModel:          cfg.VideoModel,
-		workingDir:          cfg.WorkingDir,
-		metadata:            cfg.Metadata,
-		reasoningEffort:     cfg.ReasoningEffort,
-		mcpClient:           client,
-		computerEnabled:     cfg.Computer.Enabled,
-		cfgClients:          map[string]*mcp.ClientSession{},
-		cfgServers:          map[string]types.MCPServer{},
-		configurator:        manage.NewIn(cfg.BaseDir),
-		tracer:              tracer,
-		traceDir:            cfg.TraceDir,
+		ctx:                  ctx,
+		llm:                  llm,
+		clients:              clients,
+		fragment:             cogito.NewEmptyFragment(),
+		messages:             []openai.ChatCompletionMessage{},
+		callbacks:            callbacks,
+		inject:               make(chan openai.ChatCompletionMessage, 16),
+		cogitoOptions:        cfg.AgentOptions,
+		compaction:           cfg.Compaction,
+		pruning:              cfg.ToolOutputPruning,
+		allowedTools:         make(map[string]bool),
+		toolAllow:            make(map[string]bool),
+		allowedBashPrefixes:  make(map[string]bool),
+		agentStart:           make(map[string]time.Time),
+		agentManager:         agentManager,
+		agentLogs:            newAgentLogStore(),
+		llmModel:             mainProvider.Model,
+		mainProvider:         mainProvider,
+		apiKey:               mainProvider.APIKey,
+		baseURL:              mainProvider.BaseURL,
+		transcribeModel:      cfg.TranscribeModel,
+		visionModel:          cfg.VisionModel,
+		videoModel:           cfg.VideoModel,
+		workingDir:           cfg.WorkingDir,
+		metadata:             mainProvider.Metadata,
+		reasoningEffort:      mainProvider.ReasoningEffort,
+		mcpClient:            client,
+		computerEnabled:      cfg.Computer.Enabled,
+		cfgClients:           map[string]*mcp.ClientSession{},
+		cfgServers:           map[string]types.MCPServer{},
+		configurator:         manage.NewIn(cfg.BaseDir),
+		tracer:               tracer,
+		traceDir:             cfg.TraceDir,
+		provenanceClassifier: classifier,
 	}
 	// Resume/rehydration: seed a prior conversation so the very next SendMessage
 	// continues with full memory of it, behaving identically to a session that
@@ -436,6 +469,26 @@ func (s *Session) emitSubAgentToolLine(approved bool, agentID, name, args string
 }
 
 func (s *Session) decideToolCall(req ToolCallRequest) cogito.ToolCallDecision {
+	req.ExternalSources = s.activeExternalSourceIDs()
+	// Once external data has entered the conversation, consequential actions
+	// need a fresh human decision. This check intentionally precedes hooks and
+	// broad grants: neither can silently widen trust granted by external text.
+	externallyInfluenced := len(req.ExternalSources) > 0 &&
+		!IsReadOnly(req.Name, req.Arguments, s.readOnlyCommands)
+	if externallyInfluenced {
+		note := fmt.Sprintf("Security: this action follows %d untrusted external source(s); review it independently. Broad grants do not bypass this boundary.", len(req.ExternalSources))
+		if req.Reasoning != "" {
+			req.Reasoning = note + "\nModel rationale: " + req.Reasoning
+		} else {
+			req.Reasoning = note
+		}
+		if s.callbacks.OnToolCall == nil {
+			return cogito.ToolCallDecision{Approved: false, Adjustment: "external content influenced a consequential tool call; explicit approval is required"}
+		}
+		resp := s.callbacks.OnToolCall(req)
+		return cogito.ToolCallDecision{Approved: resp.Approved, Adjustment: resp.Adjustment}
+	}
+
 	if s.hooks != nil {
 		decisions := s.hooks.Fire(s.ctx, hooks.EventPreToolUse, req.Name, map[string]any{
 			"event":     "PreToolUse",
@@ -498,6 +551,43 @@ func (s *Session) decideToolCall(req ToolCallRequest) cogito.ToolCallDecision {
 		}
 	}
 	return cogito.ToolCallDecision{Approved: resp.Approved, Adjustment: resp.Adjustment}
+}
+
+func (s *Session) isExternalResultTool(name string) bool {
+	if strings.HasPrefix(name, "web_") || strings.HasPrefix(name, "browser_") {
+		return true
+	}
+	s.provenanceMu.Lock()
+	defer s.provenanceMu.Unlock()
+	return s.externalToolNames[name]
+}
+
+func (s *Session) recordExternalResult(name, result string) {
+	if s.provenanceClassifier == nil || !s.isExternalResultTool(name) || strings.TrimSpace(result) == "" {
+		return
+	}
+	e := provenance.NewExternal(s.ctx, "", "tool-result", name, result, s.provenanceClassifier)
+	s.recordExternalEnvelope(e)
+}
+
+func (s *Session) recordExternalEnvelope(e provenance.Envelope) {
+	s.provenanceMu.Lock()
+	if s.externalSources == nil {
+		s.externalSources = make(map[string]provenance.Envelope)
+	}
+	s.externalSources[e.ID] = e
+	s.provenanceMu.Unlock()
+}
+
+func (s *Session) activeExternalSourceIDs() []string {
+	s.provenanceMu.Lock()
+	defer s.provenanceMu.Unlock()
+	ids := make([]string, 0, len(s.externalSources))
+	for id := range s.externalSources {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	return ids
 }
 
 // ToolCallDenied reports whether the given tool call would be denied (used to
@@ -815,7 +905,16 @@ func (s *Session) mcpToolFilter() func(*mcp.ClientSession, string) bool {
 		cfgSessions[sess] = true
 	}
 	return func(sess *mcp.ClientSession, name string) bool {
-		return cfgSessions[sess] || s.toolEnabled(name)
+		if cfgSessions[sess] {
+			s.provenanceMu.Lock()
+			if s.externalToolNames == nil {
+				s.externalToolNames = make(map[string]bool)
+			}
+			s.externalToolNames[name] = true
+			s.provenanceMu.Unlock()
+			return true
+		}
+		return s.toolEnabled(name)
 	}
 }
 
@@ -973,11 +1072,10 @@ func (s *Session) toolOptions(turnCtx context.Context, goal, mainModel string) [
 	}
 
 	// Restrict built-in host tools (read/write/edit/bash/glob/grep/web_*) to the
-	// allowlist too, but never MCP servers the user explicitly configured —
-	// see mcpToolFilter. Installed only when an allowlist is set (empty = all).
-	if len(s.toolAllow) > 0 {
-		opts = append(opts, cogito.WithMCPToolFilter(s.mcpToolFilter()))
-	}
+	// allowlist too, but never MCP servers the user explicitly configured. The
+	// filter is also the point where configured MCP tool names are registered as
+	// external provenance sources, so install it even when the allowlist is empty.
+	opts = append(opts, cogito.WithMCPToolFilter(s.mcpToolFilter()))
 
 	return opts
 }
@@ -1083,6 +1181,7 @@ func (s *Session) SendMessage(text string, parts ...ContentPart) (string, error)
 		}),
 		cogito.WithToolCallResultCallback(func(status cogito.ToolStatus) {
 			s.agentLogs.recordResult(status) // no-op for root-agent tool calls
+			s.recordExternalResult(status.Name, status.Result)
 			if s.hooks != nil {
 				s.hooks.Fire(s.ctx, hooks.EventPostToolUse, status.Name, map[string]any{
 					"event":  "PostToolUse",
@@ -1641,11 +1740,13 @@ func (s *Session) currentLLM() (cogito.LLM, string) {
 func (s *Session) SetModel(name string) {
 	// Built outside the lock: every input is construction-time state, so
 	// nothing here needs to be ordered against a reader.
-	c := clients.NewLocalAILLM(name, s.apiKey, s.baseURL)
-	c.SetMetadata(s.metadata)
-	c.SetReasoningEffort(s.reasoningEffort)
-
-	var llm cogito.LLM = c
+	provider := s.resolvedSessionProvider()
+	provider.Model = name
+	llm, err := llmprovider.New(provider)
+	if err != nil {
+		xlog.Error("could not switch model", "model", name, "error", err)
+		return
+	}
 	if s.tracer != nil {
 		llm = trace.NewRecordingLLM(llm, s.tracer, name, "")
 	}
@@ -1653,6 +1754,7 @@ func (s *Session) SetModel(name string) {
 	s.modelMu.Lock()
 	s.llm = llm
 	s.llmModel = name
+	s.mainProvider = provider
 	s.modelMu.Unlock()
 
 	// The new model has never been asked for this session's prefix, so it is
@@ -1666,6 +1768,12 @@ func (s *Session) SetModel(name string) {
 // can offer them for /model. A failing endpoint surfaces as an error rather
 // than an empty list.
 func (s *Session) ListModels(ctx context.Context) ([]string, error) {
+	if llmprovider.IsCodex(s.resolvedSessionProvider()) {
+		if model := s.Model(); model != "" {
+			return []string{model}, nil
+		}
+		return nil, fmt.Errorf("Codex app-server model is not configured")
+	}
 	cfg := openai.DefaultConfig(s.apiKey)
 	cfg.BaseURL = s.baseURL
 	resp, err := openai.NewClientWithConfig(cfg).ListModels(ctx)

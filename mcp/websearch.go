@@ -29,9 +29,11 @@ type webSearchInput struct {
 }
 
 type webSearchResult struct {
-	Title   string `json:"title" jsonschema:"result title"`
-	URL     string `json:"url" jsonschema:"result URL"`
-	Snippet string `json:"snippet" jsonschema:"result snippet"`
+	Title            string `json:"title" jsonschema:"result title"`
+	URL              string `json:"url" jsonschema:"result URL"`
+	Snippet          string `json:"snippet" jsonschema:"result snippet"`
+	SourceID         string `json:"source_id" jsonschema:"provenance identifier for this untrusted external result"`
+	RedactedFindings int    `json:"redacted_findings,omitempty" jsonschema:"number of potential prompt-injection spans removed"`
 }
 
 type webSearchOutput struct {
@@ -181,7 +183,7 @@ func normalizeMaxResults(n int) int {
 }
 
 // searchWeb runs a DuckDuckGo HTML search and returns structured results.
-func searchWeb(ctx context.Context, _ *mcp.CallToolRequest, in webSearchInput) (*mcp.CallToolResult, webSearchOutput, error) {
+func (ws *webServer) search(ctx context.Context, _ *mcp.CallToolRequest, in webSearchInput) (*mcp.CallToolResult, webSearchOutput, error) {
 	out := webSearchOutput{Query: in.Query}
 	if strings.TrimSpace(in.Query) == "" {
 		out.Error = "query is required"
@@ -219,6 +221,18 @@ func searchWeb(ctx context.Context, _ *mcp.CallToolRequest, in webSearchInput) (
 	if err != nil {
 		out.Error = err.Error()
 		return nil, out, nil
+	}
+	if ws.classifier != nil {
+		for i := range results {
+			e := protectExternal(ctx, ws.classifier, "web-search", results[i].URL, results[i].Title+"\n"+results[i].Snippet)
+			parts := strings.SplitN(e.Visible, "\n", 2)
+			results[i].Title = parts[0]
+			if len(parts) == 2 {
+				results[i].Snippet = parts[1]
+			}
+			results[i].SourceID = e.ID
+			results[i].RedactedFindings = len(e.Findings)
+		}
 	}
 	out.Results = results
 	out.Count = len(results)

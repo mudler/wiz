@@ -368,10 +368,31 @@ nib looks for config (in order) in `./.nib.yaml`, `$XDG_CONFIG_HOME/nib/config.y
 `~/.config/nib/config.yaml`, `~/.nib.yaml`, then `/etc/nib/config.yaml`.
 
 ```yaml
-# Required: your LLM (any OpenAI-compatible endpoint, local or remote)
+# Main LLM. provider defaults to "openai", accepting any local or remote
+# OpenAI-compatible endpoint. Set it to "codex" to use `codex app-server
+# --stdio` and an existing Codex/ChatGPT login instead.
+# provider: openai
 model: gpt-4o-mini
 api_key: your-api-key
 base_url: https://api.openai.com/v1
+
+# Optional and disabled by default: enable provenance tracking, LLM span
+# classification/redaction, and stricter approval checks for external data.
+prompt_injection_protection:
+  enabled: true
+  # Optional independent classifier. If omitted, it inherits all top-level
+  # model settings. Individual omitted fields below also inherit from the main
+  # model, while provider/model/endpoint may all be overridden.
+  classifier:
+    provider: openai
+    model: qwen3-4b
+    api_key: local
+    base_url: http://localhost:8080/v1
+
+# For either role, provider: codex defaults to `codex app-server --stdio`.
+# Codex retains the ChatGPT OAuth credentials; nib communicates over stdio and
+# never reads the token. On Nix, make Codex available on PATH with
+# `nix shell github:numtide/nix-ai-tools#codex` (or add it to the project flake).
 
 # Optional: custom system prompt
 prompt: |
@@ -451,7 +472,8 @@ nib --yolo          # or: NIB_YOLO=1 nib
 ```
 
 While it's active, nib shows it on screen: a `yolo` badge in the TUI header and
-a one-line notice in the CLI banner.
+a one-line notice in the CLI banner. If opt-in prompt-injection protection is
+enabled, its fresh-approval boundary remains active after external content.
 
 ## Tool Approval
 
@@ -491,7 +513,12 @@ In the **CLI** (`--cli`) the prompt is line-based: type `y`, `a`, `all`, `n`, or
 change, then Enter. Read-only calls (reads, searches, safe read-only shell) already skip the
 prompt by default; set `approval_mode: strict` to be prompted for those too. To skip prompting
 entirely, set `approval_mode: auto` / `allowed_tools` in your config, or run with `--yolo`
-(env: `NIB_YOLO=1`) to auto-approve every tool call.
+(env: `NIB_YOLO=1`) to auto-approve ordinary tool calls. When
+`prompt_injection_protection.enabled: true`, web, browser, attachment, and configured MCP
+results are tracked as untrusted external data. A separate, tool-free LLM pass
+identifies exact prompt-injection spans for redaction before they reach the main
+agent; classification failures withhold the external text. Subsequent
+consequential calls require fresh approval even under a broad session/turn grant.
 
 ## MCP Servers
 

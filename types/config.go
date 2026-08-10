@@ -126,9 +126,21 @@ type HookConfig struct {
 
 // Config holds configuration for creating a new session
 type Config struct {
-	Model   string `yaml:"model"`
-	APIKey  string `yaml:"api_key"`
-	BaseURL string `yaml:"base_url"`
+	// Provider selects the main LLM transport. Empty defaults to "openai",
+	// meaning any OpenAI-compatible endpoint; "codex" uses Codex app-server.
+	Provider string `yaml:"provider,omitempty"`
+	Model    string `yaml:"model"`
+	APIKey   string `yaml:"api_key"`
+	BaseURL  string `yaml:"base_url"`
+	// PromptInjectionProtection controls provenance tracking, LLM classification,
+	// redaction, and approval hardening for untrusted external data. It is
+	// disabled by default to preserve existing behavior.
+	PromptInjectionProtection PromptInjectionProtectionConfig `yaml:"prompt_injection_protection,omitempty"`
+	// CodexAppServer optionally routes security-classifier LLM calls through a
+	// local Codex app-server. This permits use of an existing ChatGPT login
+	// without exposing its OAuth credentials to nib. The default executable is
+	// "codex" and must be available on PATH.
+	CodexAppServer CodexAppServerConfig `yaml:"codex_app_server,omitempty"`
 	// Specialist models for attachment handling. Empty ⇒ LocalAI auto-selects
 	// by usecase (FLAG_TRANSCRIPT / FLAG_VISION).
 	TranscribeModel string `yaml:"transcribe_model,omitempty" json:"transcribe_model,omitempty"`
@@ -228,6 +240,101 @@ type Config struct {
 	Computer ComputerConfig `yaml:"-"`
 	// Browser is the opt-in browser-automation capability (chromedp-driven).
 	Browser BrowserConfig `yaml:"browser,omitempty"`
+}
+
+type PromptInjectionProtectionConfig struct {
+	Enabled    bool                `yaml:"enabled,omitempty"`
+	Classifier ModelProviderConfig `yaml:"classifier,omitempty"`
+}
+
+// ModelProviderConfig overrides the top-level provider settings for the
+// classifier. Empty fields inherit their top-level counterparts.
+type ModelProviderConfig struct {
+	Provider        string            `yaml:"provider,omitempty"`
+	Model           string            `yaml:"model,omitempty"`
+	APIKey          string            `yaml:"api_key,omitempty"`
+	BaseURL         string            `yaml:"base_url,omitempty"`
+	Metadata        map[string]string `yaml:"metadata,omitempty"`
+	ReasoningEffort string            `yaml:"reasoning_effort,omitempty"`
+	Command         string            `yaml:"command,omitempty"`
+	Args            []string          `yaml:"args,omitempty"`
+}
+
+func (c ModelProviderConfig) Configured() bool {
+	return c.Provider != "" || c.Model != "" || c.APIKey != "" || c.BaseURL != "" ||
+		len(c.Metadata) != 0 || c.ReasoningEffort != "" || c.Command != "" || len(c.Args) != 0
+}
+
+// ResolvedMainModel turns the top-level config into a provider config. An empty
+// provider preserves existing behavior by selecting OpenAI compatibility.
+func (c Config) ResolvedMainModel() ModelProviderConfig {
+	provider := c.Provider
+	if provider == "" {
+		provider = "openai"
+	}
+	return ModelProviderConfig{
+		Provider:        provider,
+		Model:           c.Model,
+		APIKey:          c.APIKey,
+		BaseURL:         c.BaseURL,
+		Metadata:        c.Metadata,
+		ReasoningEffort: c.ReasoningEffort,
+	}
+}
+
+// ResolvedClassifierModel returns a separately configured classifier, or the
+// resolved main provider for backward compatibility. The legacy
+// codex_app_server block remains accepted for configs written during the
+// feature's development.
+func (c Config) ResolvedClassifierModel() ModelProviderConfig {
+	if c.PromptInjectionProtection.Classifier.Configured() {
+		base := c.ResolvedMainModel()
+		override := c.PromptInjectionProtection.Classifier
+		if override.Provider != "" {
+			base.Provider = override.Provider
+		}
+		if override.Model != "" {
+			base.Model = override.Model
+		}
+		if override.APIKey != "" {
+			base.APIKey = override.APIKey
+		}
+		if override.BaseURL != "" {
+			base.BaseURL = override.BaseURL
+		}
+		if len(override.Metadata) != 0 {
+			base.Metadata = override.Metadata
+		}
+		if override.ReasoningEffort != "" {
+			base.ReasoningEffort = override.ReasoningEffort
+		}
+		if override.Command != "" {
+			base.Command = override.Command
+		}
+		if len(override.Args) != 0 {
+			base.Args = override.Args
+		}
+		return base
+	}
+	if c.CodexAppServer.Enabled {
+		return ModelProviderConfig{
+			Provider: "codex",
+			Model:    c.CodexAppServer.Model,
+			Command:  c.CodexAppServer.Command,
+			Args:     c.CodexAppServer.Args,
+		}
+	}
+	return c.ResolvedMainModel()
+}
+
+// CodexAppServerConfig describes a Codex app-server subprocess. When enabled,
+// it is used for prompt-injection classification; the main chat model remains
+// configured by model/api_key/base_url.
+type CodexAppServerConfig struct {
+	Enabled bool     `yaml:"enabled,omitempty"`
+	Command string   `yaml:"command,omitempty"`
+	Args    []string `yaml:"args,omitempty"`
+	Model   string   `yaml:"model,omitempty"`
 }
 
 // ComputerConfig configures the built-in computer_use MCP server. When Enabled,

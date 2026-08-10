@@ -5,6 +5,7 @@ import (
 
 	"github.com/mudler/nib/attachments"
 	"github.com/mudler/nib/extraction"
+	"github.com/mudler/nib/provenance"
 	"github.com/mudler/nib/specialist"
 )
 
@@ -53,6 +54,11 @@ func (s *Session) SendWithAttachments(ctx context.Context, text string, files []
 		return "", nil, err
 	}
 	finalText, parts := composeAttachments(text, res)
+	if res.TextPreamble != "" && s.provenanceClassifier != nil {
+		e := provenance.NewExternal(ctx, "", "attachment", "user-selected-file", res.TextPreamble, s.provenanceClassifier)
+		finalText = e.ModelText() + "\n" + text
+		s.recordExternalEnvelope(e)
+	}
 	if finalText == "" && len(parts) == 0 {
 		return "", res.Blocked, nil // nothing sendable (all blocked, no text)
 	}

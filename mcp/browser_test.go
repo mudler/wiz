@@ -16,6 +16,14 @@ func TestDiscoverChromePrefersExplicit(t *testing.T) {
 	_ = discoverChrome("")
 }
 
+func TestBrowserProtectionIsOffByDefault(t *testing.T) {
+	b := newBrowserServer(types.BrowserConfig{})
+	out := b.protectedOutput(context.Background(), "raw snapshot", 3)
+	if out.Snapshot != "raw snapshot" || out.ElementCount != 3 || out.SourceID != "" || out.RedactedFindings != 0 {
+		t.Fatalf("default output changed: %+v", out)
+	}
+}
+
 func TestProfileDirIsDedicatedAndStable(t *testing.T) {
 	b := newBrowserServer(types.BrowserConfig{ProfileDir: "/tmp/x/browser-profile"})
 	if b.profileDir() != "/tmp/x/browser-profile" {
